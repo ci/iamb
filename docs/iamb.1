@@ -75,6 +75,25 @@ Mark all rooms as read.
 View a list of rooms with mentions of the current user.
 .It Sy ":invites"
 View a list of rooms you are invited to.
+.It Sy ":bookmark [note]"
+Bookmark the selected message to come back to later, optionally with a note.
+Running it on a bookmarked message updates its note.
+Bookmarks are stored in the room's account data, so they sync to other sessions running
+.Nm ,
+but other clients won't show them.
+Only the message's identifier and the note are stored there, since account data isn't encrypted.
+See
+.Sy bookmarks_room
+in
+.Xr iamb 5
+for also posting new bookmarks to a room.
+.It Sy ":unbookmark"
+Remove the bookmark from the selected message.
+.It Sy ":bookmarks"
+View bookmarked messages from every room, most recently saved first.
+Press
+.Sy Enter
+on one to jump to it.
 .It Sy ":catchup"
 View unread messages from every room, grouped by room, without marking them as read.
 Messages that get marked as read stay in the window, dimmed, until it's refreshed.

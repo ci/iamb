@@ -975,6 +975,7 @@ pub struct TerminalValues {
 /// per-profile overrides on top of the global settings.
 #[derive(Clone)]
 pub struct TunableValues {
+    pub bookmarks_room: Option<OwnedRoomOrAliasId>,
     pub catchup_undo_delay: u64,
     pub encryption: EncryptionValues,
     pub default_markup: MarkupFormat,
@@ -1046,6 +1047,7 @@ pub struct Tunables {
     /// Subsection for overriding how specific Matrix users are rendered.
     pub users: Option<UserOverrides>,
 
+    pub bookmarks_room: Option<OwnedRoomOrAliasId>,
     pub catchup_undo_delay: Option<u64>,
     pub default_markup: Option<MarkupFormat>,
     pub ignorecase: Option<bool>,
@@ -1120,6 +1122,7 @@ impl Tunables {
                 .or(other.message_shortcode_display),
             normal_after_send: self.normal_after_send.or(other.normal_after_send),
             catchup_undo_delay: self.catchup_undo_delay.or(other.catchup_undo_delay),
+            bookmarks_room: self.bookmarks_room.or(other.bookmarks_room),
             profile_change_display: self.profile_change_display.or(other.profile_change_display),
             reaction_display: self.reaction_display.or(other.reaction_display),
             reaction_shortcode_display: self
@@ -1179,6 +1182,7 @@ impl Tunables {
             message_shortcode_display: self.message_shortcode_display.unwrap_or(false),
             normal_after_send: self.normal_after_send.unwrap_or(false),
             catchup_undo_delay: self.catchup_undo_delay.unwrap_or(DEFAULT_CATCHUP_UNDO_DELAY),
+            bookmarks_room: self.bookmarks_room,
             profile_change_display: self.profile_change_display.unwrap_or_default(),
             reaction_display: self.reaction_display.unwrap_or(true),
             reaction_shortcode_display: self.reaction_shortcode_display.unwrap_or(false),

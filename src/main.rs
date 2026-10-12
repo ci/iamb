@@ -62,6 +62,7 @@ use crate::windows::IambWindow;
 use crate::worker::{ClientWorker, LoginStyle, create_room, send_single_receipt};
 
 mod base;
+mod bookmarks;
 mod catchup;
 mod commands;
 mod completions;
@@ -612,6 +613,13 @@ impl Application {
                 None
             },
 
+            IambAction::Bookmark(act) => {
+                let window = self.screen.current_window_mut()?;
+                let (room_id, event_id) =
+                    window.selected_message(store).ok_or(IambError::NoSelectedMessage)?;
+
+                bookmarks::bookmark_command(act, room_id, event_id, store).await?
+            },
             IambAction::CatchUp(CatchUpAction::Undo) => {
                 let msg = match store.application.pending_reads.undo() {
                     0 => "Nothing to undo".to_string(),

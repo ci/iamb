@@ -38,11 +38,13 @@ use crate::config::theme::ThemeRoomsValues;
 use crate::prelude::*;
 use crate::profile_changes::ProfileChangeEntry;
 use crate::resolve_mxid;
+use crate::windows::bookmarks::{BookmarkItem, BookmarkListState};
 use crate::windows::catchup::{CatchUpFeed, CatchUpListState};
 use crate::windows::room::{RoomState, room_command};
 use crate::windows::verify::VerifyItem;
 use crate::windows::welcome::WelcomeState;
 
+pub mod bookmarks;
 pub mod catchup;
 pub mod room;
 pub mod verify;
@@ -526,6 +528,7 @@ macro_rules! delegate {
             IambWindow::InvitesList($id) => $e,
             IambWindow::ProfileChangeList($id) => $e,
             IambWindow::CatchUp($id, _) => $e,
+            IambWindow::BookmarkList($id, _) => $e,
         }
     };
 }
@@ -546,6 +549,7 @@ pub enum IambWindow {
     InvitesList(RoomListState),
     ProfileChangeList(ProfileChangeListState),
     CatchUp(CatchUpListState, CatchUpFeed),
+    BookmarkList(BookmarkListState, Option<Instant>),
 }
 
 impl IambWindow {
@@ -567,6 +571,27 @@ impl IambWindow {
             w.timeline_command(act, ctx, store).await
         } else {
             Err(IambError::NoSelectedRoom.into())
+        }
+    }
+
+    /// The room and event identifier of the selected message.
+    pub fn selected_message(&self, store: &ProgramStore) -> Option<(OwnedRoomId, OwnedEventId)> {
+        match self {
+            IambWindow::Room(state) => state.selected_event(store),
+            IambWindow::CatchUp(state, _) => {
+                state
+                    .get()
+                    .map(|item| (item.room_id().to_owned(), item.event_id().to_owned()))
+            },
+            IambWindow::BookmarkList(state, _) => {
+                state
+                    .get()
+                    .map(|item| (item.room_id().to_owned(), item.event_id().to_owned()))
+            },
+            IambWindow::PinnedList(state, room_id, _) => {
+                state.get().map(|item| (room_id.clone(), item.event_id.clone()))
+            },
+            _ => None,
         }
     }
 
@@ -640,6 +665,7 @@ impl IambWindow {
                 state.get().map(|state| state.room_id())
             },
             IambWindow::CatchUp(state, _) => state.get().map(|item| item.room_id()),
+            IambWindow::BookmarkList(state, _) => state.get().map(|item| item.room_id()),
 
             _ => None,
         };
@@ -1046,6 +1072,30 @@ impl WindowOps<IambInfo> for IambWindow {
                     .style(default_list_style)
                     .render(area, buf, state);
             },
+            IambWindow::BookmarkList(state, last_fetch) => {
+                let items = store
+                    .application
+                    .bookmarks
+                    .newest_first()
+                    .into_iter()
+                    .map(BookmarkItem::new)
+                    .collect::<Vec<_>>();
+
+                if last_fetch.is_none_or(|i| i.elapsed() >= MEMBER_FETCH_DEBOUNCE) {
+                    bookmarks::fetch_missing(&mut store.application, &items);
+                    *last_fetch = Some(Instant::now());
+                }
+
+                state.set(items);
+                state.set_ignorecase(store.application.settings.tunables.ignorecase);
+
+                List::new(store)
+                    .empty_message("No bookmarks yet; use :bookmark on a message to save it")
+                    .empty_alignment(Alignment::Center)
+                    .focus(focused)
+                    .style(default_list_style)
+                    .render(area, buf, state);
+            },
             IambWindow::SpaceList(state) => {
                 let mut items = sync_info
                     .spaces
@@ -1164,6 +1214,7 @@ impl WindowOps<IambInfo> for IambWindow {
             IambWindow::InvitesList(w) => Self::InvitesList(w.dup(store)),
             IambWindow::ProfileChangeList(w) => Self::ProfileChangeList(w.dup(store)),
             IambWindow::CatchUp(w, _) => Self::CatchUp(w.dup(store), CatchUpFeed::default()),
+            IambWindow::BookmarkList(w, _) => Self::BookmarkList(w.dup(store), None),
         }
     }
 
@@ -1211,6 +1262,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::InvitesList(_) => IambId::InvitesList,
             IambWindow::ProfileChangeList(_) => IambId::ProfileChangeList,
             IambWindow::CatchUp(..) => IambId::CatchUp,
+            IambWindow::BookmarkList(..) => IambId::BookmarkList,
         }
     }
 
@@ -1227,6 +1279,9 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::from("Unread Mentions"),
             IambWindow::InvitesList(_) => Line::from("Open Invites"),
             IambWindow::ProfileChangeList(_) => Line::from("Profile Changes"),
+            IambWindow::BookmarkList(state, _) => {
+                Line::from(format!("Bookmarks ({})", state.len()))
+            },
             IambWindow::CatchUp(state, _) => {
                 Line::from(format!("Catch Up ({})", CatchUpFeed::unread(state)))
             },
@@ -1271,6 +1326,9 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::styled("Unread Mentions", style),
             IambWindow::InvitesList(_) => Line::styled("Open Invites", style),
             IambWindow::ProfileChangeList(_) => Line::styled("Profile Changes", style),
+            IambWindow::BookmarkList(state, _) => {
+                Line::styled(format!("Bookmarks ({})", state.len()), style)
+            },
             IambWindow::CatchUp(state, _) => {
                 let unread = CatchUpFeed::unread(state);
                 let pending = store.application.pending_reads.len();
@@ -1405,6 +1463,11 @@ impl Window<IambInfo> for IambWindow {
                 let list = CatchUpListState::new(IambBufferId::CatchUp, vec![]);
 
                 Ok(Self::CatchUp(list, CatchUpFeed::default()))
+            },
+            IambId::BookmarkList => {
+                let list = BookmarkListState::new(IambBufferId::BookmarkList, vec![]);
+
+                Ok(Self::BookmarkList(list, None))
             },
         }
     }

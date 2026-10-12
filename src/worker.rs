@@ -65,6 +65,7 @@ use matrix_sdk::ruma::events::{
     AnyMessageLikeEventContent,
     AnyTimelineEvent,
     InitialStateEvent,
+    RoomAccountDataEvent,
     SyncEphemeralRoomEvent,
     SyncMessageLikeEvent,
     SyncStateEvent,
@@ -91,6 +92,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{Instrument as _, error, warn};
 
 use crate::base::{CreateRoomFlags, CreateRoomType, EchoLocation, MessageNeed};
+use crate::bookmarks::BookmarksEventContent;
 use crate::config::{ProfileChangeDisplay, ProxyUrl};
 use crate::notifications::register_notifications;
 use crate::oauth::oauth_login;
@@ -250,6 +252,9 @@ async fn load_plans(store: &AsyncProgramStore) -> Vec<Plan> {
             if !missing.is_empty() {
                 plan.push(Plan::Pinned(room_id.to_owned(), missing));
             }
+        }
+        if !need.events.is_empty() {
+            plan.push(Plan::Pinned(room_id.to_owned(), need.events));
         }
         if let Some(message_need) = need.messages {
             let info = rooms.get_or_default(room_id.clone());
@@ -761,6 +766,31 @@ async fn load_initial_messages(client: Client, store: AsyncProgramStore) {
         .await;
 }
 
+/// Load the bookmarks stored in each room's account data.
+async fn load_bookmarks(client: Client, store: AsyncProgramStore) {
+    for room in client.joined_rooms() {
+        let content = match room.account_data_static::<BookmarksEventContent>().await {
+            Ok(Some(raw)) => {
+                match raw.deserialize() {
+                    Ok(ev) => ev.content,
+                    Err(e) => {
+                        tracing::warn!(room_id = ?room.room_id(), "invalid bookmarks: {e}");
+                        continue;
+                    },
+                }
+            },
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(room_id = ?room.room_id(), "failed to load bookmarks: {e}");
+                continue;
+            },
+        };
+
+        let mut locked = store.lock().await;
+        locked.application.bookmarks.set_room(room.room_id().to_owned(), content);
+    }
+}
+
 async fn load_older_forever(client: &Client, store: &AsyncProgramStore) {
     // Load any pending older messages or members every 2 seconds.
     let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -1147,6 +1177,7 @@ pub async fn do_first_sync(client: &Client, store: &AsyncProgramStore) -> Result
     refresh_rooms(client, store, true).await;
 
     tokio::spawn(load_initial_messages(client.clone(), store.clone()));
+    tokio::spawn(load_bookmarks(client.clone(), store.clone()));
 
     Ok(())
 }
@@ -2059,6 +2090,20 @@ impl ClientWorker {
                     let mut locked = store.lock().await;
                     let info = locked.application.get_room_info(room_id.to_owned());
                     info.redact(ev);
+                }
+            },
+        );
+
+        let _ = self.client.add_event_handler(
+            |ev: RoomAccountDataEvent<BookmarksEventContent>,
+             room: MatrixRoom,
+             store: Ctx<AsyncProgramStore>| {
+                async move {
+                    let mut locked = store.lock().await;
+                    locked
+                        .application
+                        .bookmarks
+                        .set_room(room.room_id().to_owned(), ev.content);
                 }
             },
         );

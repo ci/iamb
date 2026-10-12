@@ -47,6 +47,10 @@ impl CatchUpItem {
     pub fn room_id(&self) -> &RoomId {
         &self.room_id
     }
+
+    pub fn event_id(&self) -> &EventId {
+        &self.event_id
+    }
 }
 
 impl Display for CatchUpItem {

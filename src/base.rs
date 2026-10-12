@@ -51,6 +51,7 @@ use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::catchup::PendingReads;
 use crate::message::poll::{
     Poll,
     PollEventLocation,
@@ -102,6 +103,32 @@ pub enum VerifyAction {
 
     /// Start an interactive (SAS) emoji verification
     Emoji,
+}
+
+/// Which messages in the `:catchup` window to mark as read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatchUpScope {
+    /// The selected message, and everything before it in the same room.
+    Selected,
+    /// Every message in the selected message's room.
+    Room,
+    /// Every message at or above the selected one.
+    Above,
+    /// Every message in the window.
+    All,
+}
+
+/// An action taken in the `:catchup` window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatchUpAction {
+    /// Mark messages as read, after the undo delay passes.
+    Read(CatchUpScope),
+
+    /// Cancel the most recent read that hasn't been sent yet.
+    Undo,
+
+    /// Rebuild the window, dropping messages that have been read.
+    Refresh,
 }
 
 /// An action taken against a room's timeline.
@@ -710,6 +737,9 @@ pub enum KeysAction {
 /// See [the commands module][super::commands] for where these are usually created.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IambAction {
+    /// Perform an action in the `:catchup` window.
+    CatchUp(CatchUpAction),
+
     /// Perform an action against the homeserver.
     Homeserver(HomeserverAction),
 
@@ -763,6 +793,12 @@ impl IambAction {
     }
 }
 
+impl From<CatchUpAction> for IambAction {
+    fn from(act: CatchUpAction) -> Self {
+        IambAction::CatchUp(act)
+    }
+}
+
 impl From<HomeserverAction> for IambAction {
     fn from(act: HomeserverAction) -> Self {
         IambAction::Homeserver(act)
@@ -808,6 +844,7 @@ impl From<TimelineAction> for IambAction {
 impl ApplicationAction for IambAction {
     fn is_edit_sequence(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::CatchUp(..) => SequenceStatus::Break,
             IambAction::ChangeTheme(..) => SequenceStatus::Break,
             IambAction::ClearUnreads => SequenceStatus::Break,
             IambAction::Homeserver(..) => SequenceStatus::Break,
@@ -828,6 +865,7 @@ impl ApplicationAction for IambAction {
 
     fn is_last_action(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::CatchUp(..) => SequenceStatus::Atom,
             IambAction::ChangeTheme(..) => SequenceStatus::Atom,
             IambAction::ClearUnreads => SequenceStatus::Atom,
             IambAction::Homeserver(..) => SequenceStatus::Atom,
@@ -848,6 +886,7 @@ impl ApplicationAction for IambAction {
 
     fn is_last_selection(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::CatchUp(..) => SequenceStatus::Ignore,
             IambAction::ChangeTheme(..) => SequenceStatus::Ignore,
             IambAction::ClearUnreads => SequenceStatus::Ignore,
             IambAction::Homeserver(..) => SequenceStatus::Ignore,
@@ -868,6 +907,7 @@ impl ApplicationAction for IambAction {
 
     fn is_switchable(&self, _: &EditContext) -> bool {
         match self {
+            IambAction::CatchUp(..) => false,
             IambAction::ChangeTheme(..) => false,
             IambAction::ClearUnreads => false,
             IambAction::Homeserver(..) => false,
@@ -2538,6 +2578,9 @@ pub struct ChatStore {
 
     /// Display name and avatar changes seen across rooms.
     pub profile_changes: ProfileChanges,
+
+    /// Read receipts from the `:catchup` window that are waiting for their undo delay to pass.
+    pub pending_reads: PendingReads,
 }
 
 impl ChatStore {
@@ -2569,9 +2612,29 @@ impl ChatStore {
             focused: true,
             open_notifications: Default::default(),
             profile_changes: Default::default(),
+            pending_reads: Default::default(),
         };
 
         Ok(store)
+    }
+
+    /// Send the `:catchup` read receipts whose undo delay has passed.
+    pub fn flush_due_reads(&mut self) {
+        for read in self.pending_reads.take_due(Instant::now()) {
+            let user_id = self.settings.profile.user_id.clone();
+            let info = self.rooms.get_or_default(read.room_id.clone());
+
+            // Update the local receipt right away, so the read point doesn't move back while
+            // waiting for the homeserver to echo it.
+            info.set_receipt(ReceiptThread::Main, user_id, read.event_id.clone());
+            self.open_notifications.remove(&read.room_id);
+            self.worker.send_receipt(
+                read.room_id,
+                ReceiptThread::Main,
+                read.event_id,
+                &self.settings,
+            );
+        }
     }
 
     /// Clear the `EventCache` for all rooms.
@@ -2714,6 +2777,9 @@ pub enum IambId {
 
     /// The `:nicks` window.
     ProfileChangeList,
+
+    /// The `:catchup` window.
+    CatchUp,
 }
 
 impl Display for IambId {
@@ -2748,6 +2814,7 @@ impl Display for IambId {
             IambId::MentionsList => f.write_str("iamb://mentions"),
             IambId::InvitesList => f.write_str("iamb://invites"),
             IambId::ProfileChangeList => f.write_str("iamb://nicks"),
+            IambId::CatchUp => f.write_str("iamb://catchup"),
         }
     }
 }
@@ -2932,6 +2999,13 @@ impl Visitor<'_> for IambIdVisitor {
 
                 Ok(IambId::ProfileChangeList)
             },
+            Some("catchup") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://catchup takes no path"));
+                }
+
+                Ok(IambId::CatchUp)
+            },
             Some(s) => Err(E::custom(format!("{s:?} is not a valid window"))),
             None => Err(E::custom("Invalid iamb window URL")),
         }
@@ -3017,6 +3091,9 @@ pub enum IambBufferId {
 
     /// The `:nicks` window.
     ProfileChangeList,
+
+    /// The `:catchup` window.
+    CatchUp,
 }
 
 impl IambBufferId {
@@ -3038,6 +3115,7 @@ impl IambBufferId {
             IambBufferId::MentionsList => IambId::MentionsList,
             IambBufferId::InvitesList => IambId::InvitesList,
             IambBufferId::ProfileChangeList => IambId::ProfileChangeList,
+            IambBufferId::CatchUp => IambId::CatchUp,
         };
 
         Some(id)

@@ -142,6 +142,14 @@ Specifying this object will replace the upstream defaults and possibly lead to u
 Possible keys and their effect are documented at:
 .br
 .Lk https://docs.rs/matrix-sdk/latest/matrix_sdk/media/struct.MediaRetentionPolicy.html#fields
+.It Sy catchup_undo_delay
+How many seconds to wait before sending the read receipts from
+.Sy ":catchup read" ,
+during which
+.Sy ":catchup undo"
+can cancel them.
+Defaults to 5.
+Any receipts still waiting are sent when quitting.
 .It Sy date_format
 A strftime format string for the date separator between messages from different days.
 See

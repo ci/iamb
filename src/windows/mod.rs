@@ -38,10 +38,12 @@ use crate::config::theme::ThemeRoomsValues;
 use crate::prelude::*;
 use crate::profile_changes::ProfileChangeEntry;
 use crate::resolve_mxid;
+use crate::windows::catchup::{CatchUpFeed, CatchUpListState};
 use crate::windows::room::{RoomState, room_command};
 use crate::windows::verify::VerifyItem;
 use crate::windows::welcome::WelcomeState;
 
+pub mod catchup;
 pub mod room;
 pub mod verify;
 pub mod welcome;
@@ -523,6 +525,7 @@ macro_rules! delegate {
             IambWindow::MentionsList($id) => $e,
             IambWindow::InvitesList($id) => $e,
             IambWindow::ProfileChangeList($id) => $e,
+            IambWindow::CatchUp($id, _) => $e,
         }
     };
 }
@@ -542,6 +545,7 @@ pub enum IambWindow {
     MentionsList(RoomListState),
     InvitesList(RoomListState),
     ProfileChangeList(ProfileChangeListState),
+    CatchUp(CatchUpListState, CatchUpFeed),
 }
 
 impl IambWindow {
@@ -563,6 +567,31 @@ impl IambWindow {
             w.timeline_command(act, ctx, store).await
         } else {
             Err(IambError::NoSelectedRoom.into())
+        }
+    }
+
+    pub fn catchup_command(
+        &mut self,
+        act: CatchUpAction,
+        store: &mut ProgramStore,
+    ) -> IambResult<EditInfo> {
+        let IambWindow::CatchUp(state, feed) = self else {
+            let msg = "Not in the :catchup window";
+            return Err(UIError::Failure(msg.into()));
+        };
+
+        match act {
+            CatchUpAction::Read(scope) => catchup::mark_read(state, scope, store),
+            CatchUpAction::Refresh => {
+                feed.refresh();
+                catchup::update(state, feed, store);
+
+                Ok(None)
+            },
+            CatchUpAction::Undo => {
+                let msg = "Undo is handled outside of the :catchup window";
+                Err(UIError::Failure(msg.into()))
+            },
         }
     }
 
@@ -610,6 +639,7 @@ impl IambWindow {
             IambWindow::ChatList(state) | IambWindow::UnreadList(state) => {
                 state.get().map(|state| state.room_id())
             },
+            IambWindow::CatchUp(state, _) => state.get().map(|item| item.room_id()),
 
             _ => None,
         };
@@ -1006,6 +1036,16 @@ impl WindowOps<IambInfo> for IambWindow {
                     .style(default_list_style)
                     .render(area, buf, state);
             },
+            IambWindow::CatchUp(state, feed) => {
+                catchup::update(state, feed, store);
+
+                List::new(store)
+                    .empty_message("You're all caught up!")
+                    .empty_alignment(Alignment::Center)
+                    .focus(focused)
+                    .style(default_list_style)
+                    .render(area, buf, state);
+            },
             IambWindow::SpaceList(state) => {
                 let mut items = sync_info
                     .spaces
@@ -1123,6 +1163,7 @@ impl WindowOps<IambInfo> for IambWindow {
             IambWindow::MentionsList(w) => Self::MentionsList(w.dup(store)),
             IambWindow::InvitesList(w) => Self::InvitesList(w.dup(store)),
             IambWindow::ProfileChangeList(w) => Self::ProfileChangeList(w.dup(store)),
+            IambWindow::CatchUp(w, _) => Self::CatchUp(w.dup(store), CatchUpFeed::default()),
         }
     }
 
@@ -1169,6 +1210,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => IambId::MentionsList,
             IambWindow::InvitesList(_) => IambId::InvitesList,
             IambWindow::ProfileChangeList(_) => IambId::ProfileChangeList,
+            IambWindow::CatchUp(..) => IambId::CatchUp,
         }
     }
 
@@ -1185,6 +1227,9 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::from("Unread Mentions"),
             IambWindow::InvitesList(_) => Line::from("Open Invites"),
             IambWindow::ProfileChangeList(_) => Line::from("Profile Changes"),
+            IambWindow::CatchUp(state, _) => {
+                Line::from(format!("Catch Up ({})", CatchUpFeed::unread(state)))
+            },
 
             IambWindow::Room(w) => w.get_tab_title(store),
             IambWindow::MemberList(state, room_id, _) => {
@@ -1226,6 +1271,17 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::styled("Unread Mentions", style),
             IambWindow::InvitesList(_) => Line::styled("Open Invites", style),
             IambWindow::ProfileChangeList(_) => Line::styled("Profile Changes", style),
+            IambWindow::CatchUp(state, _) => {
+                let unread = CatchUpFeed::unread(state);
+                let pending = store.application.pending_reads.len();
+                let mut title = format!("Catch Up ({unread} unread");
+                if pending > 0 {
+                    let _ = write!(title, ", {pending} rooms marking as read");
+                }
+                title.push(')');
+
+                Line::styled(title, style)
+            },
 
             IambWindow::Room(w) => w.get_title(store),
             IambWindow::MemberList(state, room_id, _) => {
@@ -1344,6 +1400,11 @@ impl Window<IambInfo> for IambWindow {
                 let list = ProfileChangeListState::new(IambBufferId::ProfileChangeList, vec![]);
 
                 Ok(Self::ProfileChangeList(list))
+            },
+            IambId::CatchUp => {
+                let list = CatchUpListState::new(IambBufferId::CatchUp, vec![]);
+
+                Ok(Self::CatchUp(list, CatchUpFeed::default()))
             },
         }
     }

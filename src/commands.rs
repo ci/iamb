@@ -8,6 +8,7 @@ use modalkit::commands::{CommandError, CommandResult, CommandStep};
 use modalkit::env::vim::command::{CommandContext, CommandDescription, OptionType};
 
 use crate::base::{
+    CatchUpScope,
     CreateRoomFlags,
     CreateRoomType,
     DownloadFlags,
@@ -515,6 +516,29 @@ fn iamb_mentions(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult 
 
     let open = ctx.switch(OpenTarget::Application(IambId::MentionsList));
     let step = CommandStep::Continue(open, ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_catchup(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    let args = desc.arg.strings()?;
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let act = match args.as_slice() {
+        [] => {
+            let open = ctx.switch(OpenTarget::Application(IambId::CatchUp));
+            return Ok(CommandStep::Continue(open, ctx.context.clone()));
+        },
+        ["read"] => CatchUpAction::Read(CatchUpScope::Selected),
+        ["read", "room"] => CatchUpAction::Read(CatchUpScope::Room),
+        ["read", "above"] => CatchUpAction::Read(CatchUpScope::Above),
+        ["read", "all"] => CatchUpAction::Read(CatchUpScope::All),
+        ["undo"] => CatchUpAction::Undo,
+        ["refresh"] => CatchUpAction::Refresh,
+        _ => return Result::Err(CommandError::InvalidArgument),
+    };
+
+    let step = CommandStep::Continue(IambAction::from(act).into(), ctx.context.clone());
 
     return Ok(step);
 }
@@ -1302,6 +1326,11 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         name: "nicks".into(),
         aliases: vec![],
         f: iamb_nicks,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "catchup".into(),
+        aliases: vec![],
+        f: iamb_catchup,
     });
     cmds.add_command(ProgramCommand { name: "self".into(), aliases: vec![], f: iamb_self });
     cmds.add_command(ProgramCommand {

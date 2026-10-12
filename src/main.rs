@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicUsize;
 
 use clap::{CommandFactory, Parser};
 use matrix_sdk::OwnedServerName;
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as CreateReceiptType;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::events::invite_permission_config::{
@@ -60,6 +61,7 @@ use crate::windows::IambWindow;
 use crate::worker::{ClientWorker, LoginStyle, create_room};
 
 mod base;
+mod catchup;
 mod commands;
 mod completions;
 mod config;
@@ -298,6 +300,8 @@ impl Application {
         let focused = self.focused;
         let sstate = &mut self.screen;
         let term = &mut self.terminal;
+
+        store.application.flush_due_reads();
 
         if store.application.ring_bell {
             store.application.ring_bell = term.backend_mut().write_all(&[7]).is_err();
@@ -605,6 +609,19 @@ impl Application {
                 }
 
                 None
+            },
+
+            IambAction::CatchUp(CatchUpAction::Undo) => {
+                let msg = match store.application.pending_reads.undo() {
+                    0 => "Nothing to undo".to_string(),
+                    1 => "Cancelled marking 1 room as read".to_string(),
+                    n => format!("Cancelled marking {n} rooms as read"),
+                };
+
+                Some(msg.into())
+            },
+            IambAction::CatchUp(act) => {
+                self.screen.current_window_mut()?.catchup_command(act, store)?
             },
 
             IambAction::ToggleScrollbackFocus => {
@@ -958,6 +975,37 @@ impl Application {
         self.screen.push_message(err, self.theme.cmdbar.error);
     }
 
+    /// Send any `:catchup` read receipts still waiting for their undo delay, since the receipt
+    /// worker won't get a chance to once we exit.
+    async fn send_pending_reads(&mut self) {
+        let mut locked = self.store.lock().await;
+        let reads = locked.application.pending_reads.take_all();
+        let client = locked.application.worker.client.clone();
+        let receipt_type = if locked.application.settings.tunables.read_receipt_send {
+            CreateReceiptType::Read
+        } else {
+            CreateReceiptType::ReadPrivate
+        };
+        drop(locked);
+
+        for read in reads {
+            let Some(room) = client.get_room(&read.room_id) else {
+                continue;
+            };
+
+            let send =
+                room.send_single_receipt(receipt_type.clone(), ReceiptThread::Main, read.event_id);
+
+            match tokio::time::timeout(Duration::from_secs(5), send).await {
+                Ok(Ok(())) => {},
+                Ok(Err(e)) => {
+                    tracing::warn!(room_id = ?read.room_id, "Failed to send read receipt: {e}")
+                },
+                Err(_) => tracing::warn!(room_id = ?read.room_id, "Timed out sending read receipt"),
+            }
+        }
+    }
+
     pub async fn run(&mut self) -> Result<(), std::io::Error> {
         self.terminal.clear()?;
 
@@ -1000,6 +1048,8 @@ impl Application {
                 }
             }
         }
+
+        self.send_pending_reads().await;
 
         if let Some(ref layout) = self.last_layout {
             let locked = self.store.lock().await;

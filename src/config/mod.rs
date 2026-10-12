@@ -84,6 +84,7 @@ const DEFAULT_ROOM_LABELS: [RoomLabel; 5] = [
 const DEFAULT_ENABLE_TITLE: bool = true;
 const DEFAULT_REQ_TIMEOUT: u64 = 120;
 const DEFAULT_SYNC_FREQUENCY: u64 = 250;
+const DEFAULT_CATCHUP_UNDO_DELAY: u64 = 5;
 
 const DEFAULT_ENC_INDICATOR_LOC: EncryptionIndicatorLocation = EncryptionIndicatorLocation::PROMPT;
 const DEFAULT_ICON_ENC: Cow<'static, str> = Cow::Borrowed("[E] ");
@@ -974,6 +975,7 @@ pub struct TerminalValues {
 /// per-profile overrides on top of the global settings.
 #[derive(Clone)]
 pub struct TunableValues {
+    pub catchup_undo_delay: u64,
     pub encryption: EncryptionValues,
     pub default_markup: MarkupFormat,
     pub ignorecase: bool,
@@ -1044,6 +1046,7 @@ pub struct Tunables {
     /// Subsection for overriding how specific Matrix users are rendered.
     pub users: Option<UserOverrides>,
 
+    pub catchup_undo_delay: Option<u64>,
     pub default_markup: Option<MarkupFormat>,
     pub ignorecase: Option<bool>,
     pub log_level: Option<String>,
@@ -1116,6 +1119,7 @@ impl Tunables {
                 .message_shortcode_display
                 .or(other.message_shortcode_display),
             normal_after_send: self.normal_after_send.or(other.normal_after_send),
+            catchup_undo_delay: self.catchup_undo_delay.or(other.catchup_undo_delay),
             profile_change_display: self.profile_change_display.or(other.profile_change_display),
             reaction_display: self.reaction_display.or(other.reaction_display),
             reaction_shortcode_display: self
@@ -1174,6 +1178,7 @@ impl Tunables {
             message_formatted_display: self.message_formatted_display.unwrap_or(true),
             message_shortcode_display: self.message_shortcode_display.unwrap_or(false),
             normal_after_send: self.normal_after_send.unwrap_or(false),
+            catchup_undo_delay: self.catchup_undo_delay.unwrap_or(DEFAULT_CATCHUP_UNDO_DELAY),
             profile_change_display: self.profile_change_display.unwrap_or_default(),
             reaction_display: self.reaction_display.unwrap_or(true),
             reaction_shortcode_display: self.reaction_shortcode_display.unwrap_or(false),

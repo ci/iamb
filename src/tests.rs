@@ -161,6 +161,7 @@ pub fn mock_tunables() -> TunableValues {
         message_formatted_display: true,
         message_shortcode_display: false,
         normal_after_send: true,
+        catchup_undo_delay: 5,
         profile_change_display: Default::default(),
         proxy: Proxy::default().values(),
         reaction_display: true,

@@ -410,6 +410,22 @@ fn complete_iamb_unreads(args: Vec<String>) -> Vec<String> {
     }
 }
 
+/// Tab completion for `:catchup`
+fn complete_iamb_catchup(args: Vec<String>) -> Vec<String> {
+    let options: &[&str] = match args.len() {
+        1 => &["read", "undo", "refresh"],
+        2 if args[0] == "read" => &["room", "above", "all"],
+        _ => &[],
+    };
+
+    let prefix = args.last().map(String::as_str).unwrap_or_default();
+    options
+        .iter()
+        .filter(|option| option.starts_with(prefix))
+        .map(ToString::to_string)
+        .collect()
+}
+
 /// Tab completion for `:create`
 fn complete_iamb_create(args: Vec<String>) -> Vec<String> {
     let options = ["++alias=", "++public", "++space", "++encrypted"];
@@ -638,6 +654,8 @@ fn complete_cmdarg(
 
         "unreads" => complete_iamb_unreads(args),
 
+        "catchup" => complete_iamb_catchup(args),
+
         "upload" | "download" | "open" => {
             if input.get_char_at_cursor(cursor) == Some('"') {
                 // Use the escaped instead of the qouted filename.
@@ -833,6 +851,7 @@ impl Completer<IambInfo> for IambCompleter {
             IambBufferId::MentionsList => vec![],
             IambBufferId::InvitesList => vec![],
             IambBufferId::ProfileChangeList => vec![],
+            IambBufferId::CatchUp => vec![],
         }
     }
 }

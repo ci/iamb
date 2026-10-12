@@ -36,6 +36,7 @@ use crate::base::{
 use crate::config::RoomLabel;
 use crate::config::theme::ThemeRoomsValues;
 use crate::prelude::*;
+use crate::profile_changes::ProfileChangeEntry;
 use crate::resolve_mxid;
 use crate::windows::room::{RoomState, room_command};
 use crate::windows::verify::VerifyItem;
@@ -521,6 +522,7 @@ macro_rules! delegate {
             IambWindow::UnreadList($id) => $e,
             IambWindow::MentionsList($id) => $e,
             IambWindow::InvitesList($id) => $e,
+            IambWindow::ProfileChangeList($id) => $e,
         }
     };
 }
@@ -539,6 +541,7 @@ pub enum IambWindow {
     UnreadList(RoomListState),
     MentionsList(RoomListState),
     InvitesList(RoomListState),
+    ProfileChangeList(ProfileChangeListState),
 }
 
 impl IambWindow {
@@ -655,6 +658,8 @@ impl IambWindow {
 pub type MemberListState = ListState<MemberItem, IambInfo>;
 
 pub type PinnedListState = ListState<PinnedItem, IambInfo>;
+
+pub type ProfileChangeListState = ListState<ProfileChangeItem, IambInfo>;
 
 pub type RoomListState = ListState<GenericRoomItem, IambInfo>;
 
@@ -982,6 +987,25 @@ impl WindowOps<IambInfo> for IambWindow {
                     .style(default_rooms_style)
                     .render(area, buf, state);
             },
+            IambWindow::ProfileChangeList(state) => {
+                let items = store
+                    .application
+                    .profile_changes
+                    .newest_first()
+                    .into_iter()
+                    .map(|entry| ProfileChangeItem::new(entry.clone(), &store.application.settings))
+                    .collect::<Vec<_>>();
+
+                state.set(items);
+                state.set_ignorecase(store.application.settings.tunables.ignorecase);
+
+                List::new(store)
+                    .empty_message("No display name or avatar changes seen yet")
+                    .empty_alignment(Alignment::Center)
+                    .focus(focused)
+                    .style(default_list_style)
+                    .render(area, buf, state);
+            },
             IambWindow::SpaceList(state) => {
                 let mut items = sync_info
                     .spaces
@@ -1098,6 +1122,7 @@ impl WindowOps<IambInfo> for IambWindow {
             IambWindow::UnreadList(w) => Self::UnreadList(w.dup(store)),
             IambWindow::MentionsList(w) => Self::MentionsList(w.dup(store)),
             IambWindow::InvitesList(w) => Self::InvitesList(w.dup(store)),
+            IambWindow::ProfileChangeList(w) => Self::ProfileChangeList(w.dup(store)),
         }
     }
 
@@ -1143,6 +1168,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::UnreadList(_) => IambId::UnreadList,
             IambWindow::MentionsList(_) => IambId::MentionsList,
             IambWindow::InvitesList(_) => IambId::InvitesList,
+            IambWindow::ProfileChangeList(_) => IambId::ProfileChangeList,
         }
     }
 
@@ -1158,6 +1184,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::UnreadList(_) => Line::from("Unread Messages"),
             IambWindow::MentionsList(_) => Line::from("Unread Mentions"),
             IambWindow::InvitesList(_) => Line::from("Open Invites"),
+            IambWindow::ProfileChangeList(_) => Line::from("Profile Changes"),
 
             IambWindow::Room(w) => w.get_tab_title(store),
             IambWindow::MemberList(state, room_id, _) => {
@@ -1198,6 +1225,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::UnreadList(_) => Line::styled("Unread Messages", style),
             IambWindow::MentionsList(_) => Line::styled("Unread Mentions", style),
             IambWindow::InvitesList(_) => Line::styled("Open Invites", style),
+            IambWindow::ProfileChangeList(_) => Line::styled("Profile Changes", style),
 
             IambWindow::Room(w) => w.get_title(store),
             IambWindow::MemberList(state, room_id, _) => {
@@ -1311,6 +1339,11 @@ impl Window<IambInfo> for IambWindow {
                 let list = RoomListState::new(IambBufferId::InvitesList, vec![]);
 
                 Ok(Self::InvitesList(list))
+            },
+            IambId::ProfileChangeList => {
+                let list = ProfileChangeListState::new(IambBufferId::ProfileChangeList, vec![]);
+
+                Ok(Self::ProfileChangeList(list))
             },
         }
     }
@@ -1867,6 +1900,117 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for PinnedItem {
                 let jump = IambAction::from(TimelineAction::GotoEvent(self.event_id.clone()));
 
                 Ok(vec![(open.into(), ctx.clone()), (jump.into(), ctx.clone())])
+            },
+            PromptAction::Abort(_) => {
+                let msg = "Cannot abort entry inside a list";
+                let err = EditError::Failure(msg.into());
+
+                Err(err)
+            },
+            PromptAction::Recall(..) => {
+                let msg = "Cannot recall history inside a list";
+                let err = EditError::Failure(msg.into());
+
+                Err(err)
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ProfileChangeItem {
+    entry: ProfileChangeEntry,
+    day: String,
+}
+
+impl ProfileChangeItem {
+    fn new(entry: ProfileChangeEntry, settings: &ApplicationSettings) -> Self {
+        let day = MessageTimeStamp::from(entry.last_ts)
+            .show_date(settings)
+            .content
+            .into_owned();
+
+        Self { entry, day }
+    }
+}
+
+impl Display for ProfileChangeItem {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}", self.entry.change.user_id, self.entry.change.describe())
+    }
+}
+
+impl ListItem<IambInfo> for ProfileChangeItem {
+    type Section = String;
+
+    fn show<'a>(
+        &'a self,
+        selected: bool,
+        _: &ViewportContext<ListCursor>,
+        store: &'a ProgramStore,
+    ) -> Text<'a> {
+        let settings = &store.application.settings;
+        let style = if selected {
+            settings.theme.default.add_modifier(StyleModifier::REVERSED)
+        } else {
+            settings.theme.default
+        };
+        let dim = style.fg(Color::Gray);
+
+        let change = &self.entry.change;
+        let time = MessageTimeStamp::from(self.entry.last_ts).show_time(settings);
+        let user = settings.get_user_span_maybe(change.user_id.as_ref(), None);
+
+        let rooms = self
+            .entry
+            .rooms
+            .iter()
+            .map(|room_id| store.application.get_room_title(room_id))
+            .collect::<Vec<_>>();
+        let rooms = match rooms.len() {
+            1 => format!("in {}", rooms[0]),
+            n => format!("in {n} rooms: {}", rooms.join(", ")),
+        };
+
+        let line = Line::from(vec![
+            time.patch_style(style),
+            Span::styled(" ", style),
+            user.patch_style(style),
+            Span::styled(" ", style),
+            Span::styled(change.describe(), style),
+            Span::styled(" ", style),
+            Span::styled(rooms, dim),
+        ]);
+
+        line.into()
+    }
+
+    fn get_word(&self) -> Option<String> {
+        self.entry.change.user_id.to_string().into()
+    }
+
+    fn get_section(&self) -> Option<&Self::Section> {
+        Some(&self.day)
+    }
+}
+
+impl Promptable<ProgramContext, ProgramStore, IambInfo> for ProfileChangeItem {
+    fn prompt(
+        &mut self,
+        act: &PromptAction,
+        ctx: &ProgramContext,
+        _: &mut ProgramStore,
+    ) -> EditResult<Vec<(ProgramAction, ProgramContext)>, IambInfo> {
+        match act {
+            PromptAction::Submit => {
+                let Some(room_id) = self.entry.rooms.first() else {
+                    return Ok(vec![]);
+                };
+
+                let room = IambId::Room(room_id.clone().into(), RoomView::Main);
+                let open = WindowAction::Switch(OpenTarget::Application(room));
+
+                Ok(vec![(open.into(), ctx.clone())])
             },
             PromptAction::Abort(_) => {
                 let msg = "Cannot abort entry inside a list";

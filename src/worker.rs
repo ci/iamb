@@ -91,11 +91,12 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{Instrument as _, error, warn};
 
 use crate::base::{CreateRoomFlags, CreateRoomType, EchoLocation, MessageNeed};
-use crate::config::ProxyUrl;
+use crate::config::{ProfileChangeDisplay, ProxyUrl};
 use crate::notifications::register_notifications;
 use crate::oauth::oauth_login;
 use crate::prelude::*;
 use crate::preview::{PreviewKind, PreviewManager};
+use crate::profile_changes::ProfileChanges;
 use crate::verifications;
 
 const DEFAULT_ENCRYPTION_SETTINGS: EncryptionSettings = EncryptionSettings {
@@ -478,11 +479,20 @@ async fn load_older_one(room: &MatrixRoom) -> MessageFetchResult {
     Ok((outcome.reached_start, msgs))
 }
 
+/// Whether a state event belongs in the room's timeline.
+fn timeline_shows_state(settings: &ApplicationSettings, is_profile_change: bool) -> bool {
+    let hide_profile = settings.tunables.profile_change_display == ProfileChangeDisplay::Hide;
+
+    settings.tunables.state_event_display && !(is_profile_change && hide_profile)
+}
+
 fn insert_msgs_and_receipts(
     msgs: Vec<MessageAndReceipts>,
+    room_id: &RoomId,
     info: &mut RoomInfo,
     presences: &mut CompletionMap<OwnedUserId, PresenceState>,
     previews: &mut PreviewManager,
+    profile_changes: &mut ProfileChanges,
     settings: &ApplicationSettings,
 ) {
     for (msg, thread, receipts) in msgs {
@@ -544,8 +554,11 @@ fn insert_msgs_and_receipts(
                 continue;
             },
             AnyTimelineEvent::State(msg) => {
-                if settings.tunables.state_event_display {
-                    info.insert_any_state(msg.into());
+                let msg = AnySyncStateEvent::from(msg);
+                let is_profile_change = profile_changes.insert_state(room_id, &msg);
+
+                if timeline_shows_state(settings, is_profile_change) {
+                    info.insert_any_state(msg);
                 }
             },
         }
@@ -558,13 +571,28 @@ fn load_insert(
     locked: &mut ProgramStore,
     message_needs: Vec<MessageNeed>,
 ) {
-    let ChatStore { presences, rooms, previews, settings, .. } = &mut locked.application;
+    let ChatStore {
+        presences,
+        rooms,
+        previews,
+        profile_changes,
+        settings,
+        ..
+    } = &mut locked.application;
     let info = rooms.get_or_default(room_id.clone());
     info.fetching = false;
 
     match res {
         Ok((reached_start, msgs)) => {
-            insert_msgs_and_receipts(msgs, info, presences, previews, settings);
+            insert_msgs_and_receipts(
+                msgs,
+                &room_id,
+                info,
+                presences,
+                previews,
+                profile_changes,
+                settings,
+            );
 
             info.reached_timeline_start = reached_start;
 
@@ -669,9 +697,24 @@ async fn load_initial_messages(client: Client, store: AsyncProgramStore) {
         let msgs = get_receipts_for_timeline_events(room, events).await;
 
         let mut locked = store.lock().await;
-        let ChatStore { presences, rooms, previews, settings, .. } = &mut locked.application;
+        let ChatStore {
+            presences,
+            rooms,
+            previews,
+            profile_changes,
+            settings,
+            ..
+        } = &mut locked.application;
         let info = rooms.get_or_default(room.room_id().to_owned());
-        insert_msgs_and_receipts(msgs, info, presences, previews, settings);
+        insert_msgs_and_receipts(
+            msgs,
+            room.room_id(),
+            info,
+            presences,
+            previews,
+            profile_changes,
+            settings,
+        );
     }
 
     // This is an arbitrary limit on how much work we do in parallel to avoid
@@ -697,11 +740,19 @@ async fn load_initial_messages(client: Client, store: AsyncProgramStore) {
                 };
 
                 let mut locked = store.lock().await;
-                let ChatStore { presences, rooms, previews, settings, .. } =
+                let ChatStore { presences, rooms, previews, profile_changes, settings, .. } =
                     &mut locked.application;
                 let info = rooms.get_or_default(room.room_id().to_owned());
                 info.reached_timeline_start = reached_start;
-                insert_msgs_and_receipts(msgs, info, presences, previews, settings);
+                insert_msgs_and_receipts(
+                    msgs,
+                    room.room_id(),
+                    info,
+                    presences,
+                    previews,
+                    profile_changes,
+                    settings,
+                );
                 drop(permit);
             }
         })
@@ -1981,19 +2032,22 @@ impl ClientWorker {
             },
         );
 
-        if self.settings.tunables.state_event_display {
-            let _ = self.client.add_event_handler(
-                |ev: AnySyncStateEvent, room: MatrixRoom, store: Ctx<AsyncProgramStore>| {
-                    async move {
-                        let room_id = room.room_id();
-                        let mut locked = store.lock().await;
+        let _ = self.client.add_event_handler(
+            |ev: AnySyncStateEvent, room: MatrixRoom, store: Ctx<AsyncProgramStore>| {
+                async move {
+                    let room_id = room.room_id();
+                    let mut locked = store.lock().await;
+                    let ChatStore { rooms, profile_changes, settings, .. } =
+                        &mut locked.application;
 
-                        let info = locked.application.get_room_info(room_id.to_owned());
-                        info.insert_any_state(ev);
+                    let is_profile_change = profile_changes.insert_state(room_id, &ev);
+
+                    if timeline_shows_state(settings, is_profile_change) {
+                        rooms.get_or_default(room_id.to_owned()).insert_any_state(ev);
                     }
-                },
-            );
-        }
+                }
+            },
+        );
 
         let _ = self.client.add_event_handler(
             |ev: OriginalSyncRoomRedactionEvent,
@@ -2405,5 +2459,26 @@ impl ClientWorker {
             store.lock().await.application.settings.profile.user_id = user.to_owned();
         }
         Ok(Some(InfoMessage::from(msg)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::mock_settings;
+
+    #[test]
+    fn test_timeline_shows_state() {
+        let mut settings = mock_settings();
+        assert!(timeline_shows_state(&settings, false));
+        assert!(timeline_shows_state(&settings, true));
+
+        settings.tunables.profile_change_display = ProfileChangeDisplay::Hide;
+        assert!(timeline_shows_state(&settings, false));
+        assert!(!timeline_shows_state(&settings, true));
+
+        settings.tunables.state_event_display = false;
+        assert!(!timeline_shows_state(&settings, false));
+        assert!(!timeline_shows_state(&settings, true));
     }
 }

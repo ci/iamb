@@ -69,6 +69,7 @@ mod notifications;
 mod oauth;
 mod prelude;
 mod preview;
+mod profile_changes;
 mod util;
 mod verifications;
 mod windows;

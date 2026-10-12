@@ -220,7 +220,7 @@ impl MessageTimeStamp {
         dt1.date_naive() == dt2.date_naive()
     }
 
-    fn show_date(self, settings: &ApplicationSettings) -> Span<'static> {
+    pub(crate) fn show_date(self, settings: &ApplicationSettings) -> Span<'static> {
         let time = self
             .as_datetime()
             .format(settings.tunables.date_format.as_str())
@@ -234,7 +234,7 @@ impl MessageTimeStamp {
         self.as_datetime().format("%Y-%m-%d %H:%M").to_string()
     }
 
-    fn show_time(self, settings: &ApplicationSettings) -> Span<'static> {
+    pub(crate) fn show_time(self, settings: &ApplicationSettings) -> Span<'static> {
         let time = self
             .as_datetime()
             .format(settings.tunables.time_format.as_str())

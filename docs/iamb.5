@@ -264,6 +264,20 @@ this command may also be passed
 and
 .Sy geo:
 URLs for relevant messages.
+.It Sy profile_change_display
+Defines where display name and avatar changes are shown.
+Possible values are:
+.Bl -tag -width Ds
+.It Sy show
+Show them in room timelines along with other state events.
+This is the default value.
+.It Sy hide
+Keep them out of room timelines.
+.El
+Either way, they're collected in the
+.Sy :nicks
+window, where the same change made across several rooms is shown once.
+Profile changes never count towards a room's unread messages.
 .It Sy proxy
 When this subsection is present, you can configure how requests are proxied to the homeserver.
 See

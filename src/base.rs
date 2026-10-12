@@ -62,6 +62,7 @@ use crate::message::poll::{
 };
 use crate::notifications::NotificationHandle;
 use crate::prelude::*;
+use crate::profile_changes::ProfileChanges;
 
 /// The set of characters used in different Matrix IDs.
 pub const MATRIX_ID_WORD: WordStyle = WordStyle::CharSet(is_mxid_char);
@@ -2534,6 +2535,9 @@ pub struct ChatStore {
 
     /// Notifications that should be dismissed when the user opens the room.
     pub open_notifications: HashMap<OwnedRoomId, Vec<NotificationHandle>>,
+
+    /// Display name and avatar changes seen across rooms.
+    pub profile_changes: ProfileChanges,
 }
 
 impl ChatStore {
@@ -2564,6 +2568,7 @@ impl ChatStore {
             draw_error: None,
             focused: true,
             open_notifications: Default::default(),
+            profile_changes: Default::default(),
         };
 
         Ok(store)
@@ -2706,6 +2711,9 @@ pub enum IambId {
 
     /// The `:invites` window.
     InvitesList,
+
+    /// The `:nicks` window.
+    ProfileChangeList,
 }
 
 impl Display for IambId {
@@ -2739,6 +2747,7 @@ impl Display for IambId {
             IambId::UnreadList => f.write_str("iamb://unreads"),
             IambId::MentionsList => f.write_str("iamb://mentions"),
             IambId::InvitesList => f.write_str("iamb://invites"),
+            IambId::ProfileChangeList => f.write_str("iamb://nicks"),
         }
     }
 }
@@ -2916,6 +2925,13 @@ impl Visitor<'_> for IambIdVisitor {
 
                 Ok(IambId::InvitesList)
             },
+            Some("nicks") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://nicks takes no path"));
+                }
+
+                Ok(IambId::ProfileChangeList)
+            },
             Some(s) => Err(E::custom(format!("{s:?} is not a valid window"))),
             None => Err(E::custom("Invalid iamb window URL")),
         }
@@ -2998,6 +3014,9 @@ pub enum IambBufferId {
 
     /// The `:invites` window.
     InvitesList,
+
+    /// The `:nicks` window.
+    ProfileChangeList,
 }
 
 impl IambBufferId {
@@ -3018,6 +3037,7 @@ impl IambBufferId {
             IambBufferId::UnreadList => IambId::UnreadList,
             IambBufferId::MentionsList => IambId::MentionsList,
             IambBufferId::InvitesList => IambId::InvitesList,
+            IambBufferId::ProfileChangeList => IambId::ProfileChangeList,
         };
 
         Some(id)

@@ -980,7 +980,7 @@ impl Application {
     /// worker won't get a chance to once we exit.
     async fn send_pending_reads(&mut self) {
         let mut locked = self.store.lock().await;
-        let reads = locked.application.pending_reads.take_all();
+        let reads = locked.application.pending_reads.take_newest();
         let client = locked.application.worker.client.clone();
         let receipt_type = if locked.application.settings.tunables.read_receipt_send {
             ReceiptType::Read

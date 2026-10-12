@@ -58,6 +58,25 @@ impl PendingReads {
         std::mem::take(&mut self.reads)
     }
 
+    /// Remove and return the newest queued receipt for each room.
+    ///
+    /// Use this when sending receipts concurrently, since two receipts for the same room can
+    /// otherwise land out of order and leave the older one in place.
+    pub fn take_newest(&mut self) -> Vec<PendingRead> {
+        let mut newest: HashMap<OwnedRoomId, PendingRead> = HashMap::new();
+
+        for read in self.take_all() {
+            match newest.get(&read.room_id) {
+                Some(current) if current.key >= read.key => {},
+                _ => {
+                    newest.insert(read.room_id.clone(), read);
+                },
+            }
+        }
+
+        newest.into_values().collect()
+    }
+
     /// The newest message queued to be marked read in a room.
     pub fn read_up_to(&self, room_id: &RoomId) -> Option<&MessageKey> {
         self.reads.iter().filter(|r| r.room_id == room_id).map(|r| &r.key).max()
@@ -221,6 +240,31 @@ mod tests {
         assert_eq!(pending.len(), 1);
 
         assert_eq!(pending.take_all().len(), 1);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_pending_take_newest() {
+        let mut pending = PendingReads::default();
+        let now = Instant::now();
+        let room1 = room_id!("!room1:example.com");
+        let room2 = room_id!("!room2:example.com");
+
+        pending.add(vec![(room1.to_owned(), MSG2_EVID.clone(), key(2, &MSG2_EVID))], now);
+        pending.add(vec![(room1.to_owned(), MSG1_EVID.clone(), key(1, &MSG1_EVID))], now);
+        pending.add(vec![(room2.to_owned(), MSG3_EVID.clone(), key(3, &MSG3_EVID))], now);
+
+        let mut newest = pending
+            .take_newest()
+            .into_iter()
+            .map(|r| (r.room_id, r.event_id))
+            .collect::<Vec<_>>();
+        newest.sort();
+
+        assert_eq!(newest, vec![
+            (room1.to_owned(), MSG2_EVID.clone()),
+            (room2.to_owned(), MSG3_EVID.clone()),
+        ]);
         assert!(pending.is_empty());
     }
 

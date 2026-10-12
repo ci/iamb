@@ -16,6 +16,7 @@ use crate::base::{
     IambJoinRule,
     KeysAction,
     MemberUpdateAction,
+    NoteUpdate,
     ProgramCommand,
     ProgramCommands,
     RoomField,
@@ -545,7 +546,11 @@ fn iamb_catchup(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
 
 fn iamb_bookmark(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     let note = desc.arg.text.trim();
-    let note = (!note.is_empty()).then(|| note.to_string());
+    let note = match (note.is_empty(), desc.bang) {
+        (false, _) => NoteUpdate::Set(note.to_string()),
+        (true, false) => NoteUpdate::Keep,
+        (true, true) => NoteUpdate::Clear,
+    };
 
     let act = IambAction::from(BookmarkAction::Save(note));
     let step = CommandStep::Continue(act.into(), ctx.context.clone());

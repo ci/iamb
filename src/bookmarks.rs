@@ -8,6 +8,7 @@ use matrix_sdk::ruma::RoomOrAliasId;
 use matrix_sdk::ruma::events::macros::EventContent;
 use serde::{Deserialize, Serialize};
 
+use crate::base::NoteUpdate;
 use crate::prelude::*;
 
 /// The account data stored in each room with bookmarked messages.
@@ -16,6 +17,39 @@ use crate::prelude::*;
 pub struct BookmarksEventContent {
     #[serde(default)]
     pub bookmarks: BTreeMap<OwnedEventId, Bookmark>,
+
+    /// Fields from newer versions, kept so that saving doesn't drop them.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl BookmarksEventContent {
+    /// Bookmark a message, or update the note of an existing bookmark.
+    pub fn save(
+        &mut self,
+        event_id: OwnedEventId,
+        note: NoteUpdate,
+        now: MilliSecondsSinceUnixEpoch,
+    ) {
+        let bookmark = self.bookmarks.entry(event_id).or_insert_with(|| {
+            Bookmark {
+                note: None,
+                saved_at: now,
+                extra: Default::default(),
+            }
+        });
+
+        match note {
+            NoteUpdate::Keep => {},
+            NoteUpdate::Set(note) => bookmark.note = Some(note),
+            NoteUpdate::Clear => bookmark.note = None,
+        }
+    }
+
+    /// Remove a bookmark, returning whether there was one.
+    pub fn remove(&mut self, event_id: &EventId) -> bool {
+        self.bookmarks.remove(event_id).is_some()
+    }
 }
 
 /// A single bookmarked message.
@@ -25,6 +59,10 @@ pub struct Bookmark {
     pub note: Option<String>,
 
     pub saved_at: MilliSecondsSinceUnixEpoch,
+
+    /// Fields from newer versions, kept so that saving doesn't drop them.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// A bookmark, along with where it lives.
@@ -51,29 +89,9 @@ impl Bookmarks {
         }
     }
 
+    #[cfg(test)]
     pub fn get(&self, room_id: &RoomId, event_id: &EventId) -> Option<&Bookmark> {
         self.rooms.get(room_id)?.bookmarks.get(event_id)
-    }
-
-    /// The room's bookmarks after saving a message, to store in its account data.
-    pub fn with_saved(
-        &self,
-        room_id: &RoomId,
-        event_id: OwnedEventId,
-        note: Option<String>,
-        now: MilliSecondsSinceUnixEpoch,
-    ) -> BookmarksEventContent {
-        let mut content = self.rooms.get(room_id).cloned().unwrap_or_default();
-        let saved_at = content.bookmarks.get(&event_id).map(|b| b.saved_at).unwrap_or(now);
-        content.bookmarks.insert(event_id, Bookmark { note, saved_at });
-        content
-    }
-
-    /// The room's bookmarks after removing a message, or `None` if it wasn't bookmarked.
-    pub fn without(&self, room_id: &RoomId, event_id: &EventId) -> Option<BookmarksEventContent> {
-        let mut content = self.rooms.get(room_id)?.clone();
-        content.bookmarks.remove(event_id)?;
-        Some(content)
     }
 
     /// All bookmarks, most recently saved first.
@@ -143,29 +161,42 @@ pub async fn bookmark_command(
     store: &mut ProgramStore,
 ) -> IambResult<EditInfo> {
     let room = store.application.get_joined_room(&room_id).ok_or(IambError::NotJoined)?;
-    let bookmarks = &store.application.bookmarks;
-    let is_new = bookmarks.get(&room_id, &event_id).is_none();
 
-    let (content, note) = match act {
-        BookmarkAction::Save(note) => {
-            let now = MilliSecondsSinceUnixEpoch::now();
-            let content = bookmarks.with_saved(&room_id, event_id.clone(), note.clone(), now);
-            (content, note)
+    // Start from the SDK's copy of the account data rather than ours, which might not have
+    // finished loading, so that saving never drops other bookmarks.
+    let mut content = match room.account_data_static::<BookmarksEventContent>().await {
+        Ok(Some(raw)) => {
+            raw.deserialize().map(|ev| ev.content).map_err(|e| {
+                let msg = format!("Not changing bookmarks, the saved ones couldn't be read: {e}");
+                UIError::Failure(msg)
+            })?
         },
-        BookmarkAction::Remove => {
-            let Some(content) = bookmarks.without(&room_id, &event_id) else {
-                return Err(UIError::Failure("Message isn't bookmarked".into()));
-            };
-
-            room.set_account_data(content.clone()).await.map_err(IambError::from)?;
-            store.application.bookmarks.set_room(room_id, content);
-
-            return Ok(Some("Removed bookmark".into()));
-        },
+        Ok(None) => BookmarksEventContent::default(),
+        Err(e) => return Err(IambError::from(e).into()),
     };
 
+    let is_new = !content.bookmarks.contains_key(&event_id);
+
+    match act {
+        BookmarkAction::Save(note) => {
+            content.save(event_id.clone(), note, MilliSecondsSinceUnixEpoch::now());
+        },
+        BookmarkAction::Remove => {
+            if !content.remove(&event_id) {
+                return Err(UIError::Failure("Message isn't bookmarked".into()));
+            }
+        },
+    }
+
     room.set_account_data(content.clone()).await.map_err(IambError::from)?;
+
+    let note = content.bookmarks.get(&event_id).and_then(|b| b.note.clone());
+    let removed = !content.bookmarks.contains_key(&event_id);
     store.application.bookmarks.set_room(room_id.clone(), content);
+
+    if removed {
+        return Ok(Some("Removed bookmark".into()));
+    }
 
     if !is_new {
         return Ok(Some("Updated bookmark".into()));
@@ -245,34 +276,55 @@ mod tests {
     #[test]
     fn test_save_and_remove() {
         let mut bookmarks = Bookmarks::default();
+        let mut content = BookmarksEventContent::default();
         let room = room_id!("!a:example.com");
         let ev1 = event_id!("$1:example.com");
         let ev2 = event_id!("$2:example.com");
 
-        let content = bookmarks.with_saved(room, ev1.to_owned(), None, ts(10));
-        bookmarks.set_room(room.to_owned(), content);
-        let content = bookmarks.with_saved(room, ev2.to_owned(), Some("todo".into()), ts(20));
-        bookmarks.set_room(room.to_owned(), content);
+        content.save(ev1.to_owned(), NoteUpdate::Keep, ts(10));
+        content.save(ev2.to_owned(), NoteUpdate::Set("todo".into()), ts(20));
+        bookmarks.set_room(room.to_owned(), content.clone());
 
         let entries = bookmarks.newest_first();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].event_id, ev2);
         assert_eq!(entries[0].bookmark.note.as_deref(), Some("todo"));
 
-        // Updating a note keeps when it was first saved.
-        let content = bookmarks.with_saved(room, ev1.to_owned(), Some("later".into()), ts(30));
-        bookmarks.set_room(room.to_owned(), content);
-        let bookmark = bookmarks.get(room, ev1).unwrap();
-        assert_eq!(bookmark.saved_at, ts(10));
-        assert_eq!(bookmark.note.as_deref(), Some("later"));
+        // Saving again keeps when it was first saved, and the note unless it's changed.
+        content.save(ev2.to_owned(), NoteUpdate::Keep, ts(30));
+        let bookmark = &content.bookmarks[ev2];
+        assert_eq!(bookmark.saved_at, ts(20));
+        assert_eq!(bookmark.note.as_deref(), Some("todo"));
 
-        let content = bookmarks.without(room, ev1).unwrap();
-        bookmarks.set_room(room.to_owned(), content);
-        assert!(bookmarks.without(room, ev1).is_none());
+        content.save(ev2.to_owned(), NoteUpdate::Set("later".into()), ts(30));
+        assert_eq!(content.bookmarks[ev2].note.as_deref(), Some("later"));
+        content.save(ev2.to_owned(), NoteUpdate::Clear, ts(30));
+        assert_eq!(content.bookmarks[ev2].note, None);
 
-        let content = bookmarks.without(room, ev2).unwrap();
+        assert!(content.remove(ev1));
+        assert!(!content.remove(ev1));
+        assert!(content.remove(ev2));
+
         bookmarks.set_room(room.to_owned(), content);
         assert!(bookmarks.newest_first().is_empty());
+        assert!(bookmarks.get(room, ev2).is_none());
+    }
+
+    #[test]
+    fn test_unknown_fields_kept() {
+        let json = serde_json::json!({
+            "bookmarks": {
+                "$1:example.com": { "saved_at": 10, "due": 99 },
+            },
+            "version": 2,
+        });
+        let mut content: BookmarksEventContent = serde_json::from_value(json).unwrap();
+        content.save(event_id!("$2:example.com").to_owned(), NoteUpdate::Keep, ts(20));
+
+        let saved = serde_json::to_value(&content).unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["bookmarks"]["$1:example.com"]["due"], 99);
+        assert_eq!(saved["bookmarks"]["$2:example.com"]["saved_at"], 20);
     }
 
     #[test]

@@ -106,11 +106,22 @@ pub enum VerifyAction {
     Emoji,
 }
 
+/// What to do with a bookmark's note when saving it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NoteUpdate {
+    /// Leave an existing note as it is.
+    Keep,
+    /// Replace the note.
+    Set(String),
+    /// Remove the note.
+    Clear,
+}
+
 /// An action on the bookmark for the selected message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BookmarkAction {
     /// Bookmark the message, or update its note.
-    Save(Option<String>),
+    Save(NoteUpdate),
 
     /// Remove the message's bookmark.
     Remove,

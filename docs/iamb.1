@@ -77,7 +77,9 @@ View a list of rooms with mentions of the current user.
 View a list of rooms you are invited to.
 .It Sy ":bookmark [note]"
 Bookmark the selected message to come back to later, optionally with a note.
-Running it on a bookmarked message updates its note.
+Running it on a bookmarked message with a note replaces the note, and without one keeps it.
+.It Sy ":bookmark!"
+Remove the note from the selected message's bookmark.
 Bookmarks are stored in the room's account data, so they sync to other sessions running
 .Nm ,
 but other clients won't show them.

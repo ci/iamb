@@ -853,7 +853,7 @@ fn convert_receipt_type(value: ReceiptType) -> CreateReceiptType {
 
 /// Send a single read receipt, and return `true` if the server accepted it and we don't need
 /// to retry sending it later on.
-async fn send_single_receipt(
+pub async fn send_single_receipt(
     client: &Client,
     room_id: &RoomId,
     thread: ReceiptThread,

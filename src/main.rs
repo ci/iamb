@@ -24,14 +24,15 @@ use std::process;
 use std::sync::atomic::AtomicUsize;
 
 use clap::{CommandFactory, Parser};
+use futures::future::join_all;
 use matrix_sdk::OwnedServerName;
-use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as CreateReceiptType;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
 use matrix_sdk::ruma::events::invite_permission_config::{
     InvitePermissionAction,
     InvitePermissionConfigEventContent,
 };
+use matrix_sdk::ruma::events::receipt::ReceiptType;
 use modalkit::actions::{Commandable, TabAction, TabContainer, TabCount, WindowContainer};
 use modalkit::crossterm;
 use modalkit::crossterm::cursor::SetCursorStyle;
@@ -58,7 +59,7 @@ use crate::config::{CursorShape, Iamb};
 use crate::prelude::*;
 use crate::util::{restore_tty, setup_tty};
 use crate::windows::IambWindow;
-use crate::worker::{ClientWorker, LoginStyle, create_room};
+use crate::worker::{ClientWorker, LoginStyle, create_room, send_single_receipt};
 
 mod base;
 mod catchup;
@@ -982,27 +983,29 @@ impl Application {
         let reads = locked.application.pending_reads.take_all();
         let client = locked.application.worker.client.clone();
         let receipt_type = if locked.application.settings.tunables.read_receipt_send {
-            CreateReceiptType::Read
+            ReceiptType::Read
         } else {
-            CreateReceiptType::ReadPrivate
+            ReceiptType::ReadPrivate
         };
         drop(locked);
 
-        for read in reads {
-            let Some(room) = client.get_room(&read.room_id) else {
-                continue;
-            };
+        let sends = reads.into_iter().map(|read| {
+            let client = &client;
+            let receipt_type = receipt_type.clone();
 
-            let send =
-                room.send_single_receipt(receipt_type.clone(), ReceiptThread::Main, read.event_id);
-
-            match tokio::time::timeout(Duration::from_secs(5), send).await {
-                Ok(Ok(())) => {},
-                Ok(Err(e)) => {
-                    tracing::warn!(room_id = ?read.room_id, "Failed to send read receipt: {e}")
-                },
-                Err(_) => tracing::warn!(room_id = ?read.room_id, "Timed out sending read receipt"),
+            async move {
+                let thread = ReceiptThread::Main;
+                send_single_receipt(client, &read.room_id, thread, receipt_type, read.event_id)
+                    .await
             }
+        });
+
+        // Send them all at once, without holding up quitting for long on a bad connection.
+        if tokio::time::timeout(Duration::from_secs(5), join_all(sends))
+            .await
+            .is_err()
+        {
+            tracing::warn!("Timed out sending read receipts while exiting");
         }
     }
 

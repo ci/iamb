@@ -14,6 +14,9 @@ use crate::prelude::*;
 /// How long to wait between requests to load older messages for a room.
 const LOAD_DEBOUNCE: Duration = Duration::from_secs(2);
 
+/// How many times to load older messages for a room while looking for its read point.
+const LOAD_ATTEMPTS: u8 = 30;
+
 pub type CatchUpListState = ListState<CatchUpItem, IambInfo>;
 
 /// The room heading shown above its messages.
@@ -133,7 +136,7 @@ pub struct CatchUpFeed {
     seen: HashMap<OwnedRoomId, BTreeMap<MessageKey, OwnedEventId>>,
 
     /// When we last asked to load older messages for each room.
-    loads: HashMap<OwnedRoomId, Instant>,
+    loads: HashMap<OwnedRoomId, (Instant, u8)>,
 }
 
 impl CatchUpFeed {
@@ -181,6 +184,16 @@ impl CatchUpFeed {
 
     /// Build the items to show, picking up any newly arrived messages.
     pub fn items(&mut self, store: &mut ChatStore) -> Vec<CatchUpItem> {
+        // Forget rooms that have since been left.
+        let client = &store.worker.client;
+        let joined = |room_id: &OwnedRoomId| {
+            client
+                .get_room(room_id)
+                .is_some_and(|r| r.state() == MatrixRoomState::Joined)
+        };
+        self.order.retain(joined);
+        self.seen.retain(|room_id, _| joined(room_id));
+
         self.add_rooms(store);
 
         let ChatStore {
@@ -200,17 +213,25 @@ impl CatchUpFeed {
             let read =
                 ReadPoint::new(info, sdk_receipt, pending_reads.read_up_to(room_id), user_id);
 
-            // Keep loading older messages until we find where the user stopped reading.
+            let unread_count = room.num_unread_messages();
+            let unread = unread_messages(info, &read, unread_count, user_id);
+
+            // Load older messages until we find where the user stopped reading, or at least
+            // until there are as many as the SDK says are unread.
+            let load = self.loads.get(room_id);
+            let attempts = load.map(|(_, n)| *n).unwrap_or_default();
             if let ReadPoint::Unloaded(event_id) = &read &&
                 !info.reached_timeline_start &&
-                self.loads.get(room_id).is_none_or(|t| t.elapsed() >= LOAD_DEBOUNCE)
+                (unread.len() as u64) < unread_count &&
+                attempts < LOAD_ATTEMPTS &&
+                load.is_none_or(|(t, _)| t.elapsed() >= LOAD_DEBOUNCE)
             {
                 need_load.need_message(room_id.clone(), event_id.clone());
-                self.loads.insert(room_id.clone(), Instant::now());
+                self.loads.insert(room_id.clone(), (Instant::now(), attempts + 1));
             }
 
             let seen = self.seen.entry(room_id.clone()).or_default();
-            seen.extend(unread_messages(info, &read, room.num_unread_messages(), user_id));
+            seen.extend(unread);
 
             let title = info.name.clone().unwrap_or_else(|| "Untitled Matrix Room".into());
             let section = CatchUpSection { room_id: room_id.clone(), title };

@@ -102,8 +102,12 @@ impl ReadPoint {
 
         match (newest, sdk_receipt) {
             (Some(key), _) => ReadPoint::Loaded(key.clone()),
-            (None, Some(event_id)) => ReadPoint::Unloaded(event_id.to_owned()),
-            (None, None) => ReadPoint::Unknown,
+            // A receipt on something that's loaded but isn't a message (like a reaction or an
+            // edit) has no place in the timeline, so loading more history won't help.
+            (None, Some(event_id)) if !info.keys.contains_key(event_id) => {
+                ReadPoint::Unloaded(event_id.to_owned())
+            },
+            (None, _) => ReadPoint::Unknown,
         }
     }
 
@@ -162,6 +166,7 @@ pub fn unread_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base::EventLocation;
     use crate::tests::*;
     use matrix_sdk::ruma::{event_id, room_id, user_id};
 
@@ -266,6 +271,12 @@ mod tests {
             ReadPoint::new(&info, Some(&ev1), Some(&key2), user_id),
             ReadPoint::Loaded(key2.clone())
         );
+        // A receipt on a loaded event that isn't a message, like a reaction, isn't worth loading
+        // more history for.
+        let reaction = event_id!("$reaction:example.com");
+        info.keys.insert(reaction.to_owned(), EventLocation::Reaction(ev1.clone()));
+        assert_eq!(ReadPoint::new(&info, Some(reaction), None, user_id), ReadPoint::Unknown);
+
         info.set_receipt(ReceiptThread::Main, user_id.to_owned(), ev2.clone());
         assert_eq!(
             ReadPoint::new(&info, Some(unloaded), None, user_id),

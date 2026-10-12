@@ -5,6 +5,9 @@
 use std::collections::BTreeMap;
 
 use matrix_sdk::ruma::RoomOrAliasId;
+use matrix_sdk::ruma::api::client::config::get_room_account_data;
+use matrix_sdk::ruma::api::error::ErrorKind;
+use matrix_sdk::ruma::events::StaticEventContent;
 use matrix_sdk::ruma::events::macros::EventContent;
 use serde::{Deserialize, Serialize};
 
@@ -162,18 +165,8 @@ pub async fn bookmark_command(
 ) -> IambResult<EditInfo> {
     let room = store.application.get_joined_room(&room_id).ok_or(IambError::NotJoined)?;
 
-    // Start from the SDK's copy of the account data rather than ours, which might not have
-    // finished loading, so that saving never drops other bookmarks.
-    let mut content = match room.account_data_static::<BookmarksEventContent>().await {
-        Ok(Some(raw)) => {
-            raw.deserialize().map(|ev| ev.content).map_err(|e| {
-                let msg = format!("Not changing bookmarks, the saved ones couldn't be read: {e}");
-                UIError::Failure(msg)
-            })?
-        },
-        Ok(None) => BookmarksEventContent::default(),
-        Err(e) => return Err(IambError::from(e).into()),
-    };
+    let user_id = &store.application.settings.profile.user_id;
+    let mut content = fetch_content(&room, user_id).await?;
 
     let is_new = !content.bookmarks.contains_key(&event_id);
 
@@ -205,6 +198,32 @@ pub async fn bookmark_command(
     match mirror(&room, &event_id, note.as_deref(), store).await {
         Ok(()) => Ok(Some("Bookmarked message".into())),
         Err(e) => Ok(Some(format!("Bookmarked message, but couldn't post it: {e}").into())),
+    }
+}
+
+/// Fetch a room's bookmarks from the homeserver, to modify and write back.
+///
+/// Neither our copy nor the SDK's will include our own recent writes until they come back
+/// through a sync, so starting from either could drop bookmarks saved in quick succession.
+async fn fetch_content(room: &MatrixRoom, user_id: &UserId) -> IambResult<BookmarksEventContent> {
+    let event_type = BookmarksEventContent::TYPE.into();
+    let request = get_room_account_data::v3::Request::new(
+        user_id.to_owned(),
+        room.room_id().to_owned(),
+        event_type,
+    );
+
+    match room.client().send(request).await {
+        Ok(resp) => {
+            resp.account_data.deserialize_as_unchecked().map_err(|e| {
+                let msg = format!("Not changing bookmarks, the saved ones couldn't be read: {e}");
+                UIError::Failure(msg)
+            })
+        },
+        Err(e) if matches!(e.client_api_error_kind(), Some(ErrorKind::NotFound)) => {
+            Ok(BookmarksEventContent::default())
+        },
+        Err(e) => Err(IambError::from(e).into()),
     }
 }
 

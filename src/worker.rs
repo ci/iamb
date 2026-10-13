@@ -3,6 +3,7 @@
 //! The worker thread handles asynchronous work, and can receive messages from the main thread that
 //! block on a reply from the async worker.
 
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
@@ -52,6 +53,7 @@ use matrix_sdk::ruma::events::poll::unstable_start::UnstablePollStartEventConten
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptEventContent, ReceiptType};
+use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
 use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
 use matrix_sdk::ruma::events::room::member::{MembershipState, OriginalSyncRoomMemberEvent};
 use matrix_sdk::ruma::events::room::name::RoomNameEventContent;
@@ -63,6 +65,7 @@ use matrix_sdk::ruma::events::typing::SyncTypingEvent;
 use matrix_sdk::ruma::events::{
     AnyMessageLikeEvent,
     AnyMessageLikeEventContent,
+    AnySyncTimelineEvent,
     AnyTimelineEvent,
     InitialStateEvent,
     RoomAccountDataEvent,
@@ -383,6 +386,103 @@ async fn pinned_load_one(
     Some(msg)
 }
 
+/// Try decrypting an event again, in case its key has arrived since it was cached.
+///
+/// If it still can't be decrypted, this also gets the SDK to try downloading its key from the
+/// server-side key backup, which it otherwise only does for undecryptable events from sync.
+async fn retry_decrypt(
+    room: &MatrixRoom,
+    event: &Raw<AnySyncTimelineEvent>,
+) -> Option<AnyTimelineEvent> {
+    let event = event.clone().cast_unchecked::<OriginalSyncRoomEncryptedEvent>();
+    let decrypted = room.decrypt_event(&event, None).await.ok()?;
+
+    match decrypted.kind {
+        TimelineEventKind::Decrypted(decrypted) => decrypted.event.deserialize().ok(),
+        _ => None,
+    }
+}
+
+/// Decrypt the loaded messages that new room keys can now decrypt.
+async fn redecrypt_room(
+    client: &Client,
+    store: &AsyncProgramStore,
+    room_id: &RoomId,
+    sessions: &HashSet<String>,
+) {
+    let Some(room) = client.get_room(room_id) else {
+        return;
+    };
+
+    let event_ids = match store.lock().await.application.rooms.get(room_id) {
+        Some(info) => info.undecrypted_events(sessions),
+        None => return,
+    };
+
+    for event_id in event_ids {
+        let ev = match room.load_or_fetch_event(&event_id, None).await {
+            Ok(ev) => ev,
+            Err(e) => {
+                tracing::warn!(?event_id, "failed to load event to decrypt again: {e}");
+                continue;
+            },
+        };
+
+        let msg = match ev.kind {
+            TimelineEventKind::Decrypted(decrypted) => decrypted.event.deserialize().ok(),
+            TimelineEventKind::UnableToDecrypt { event, .. } => retry_decrypt(&room, &event).await,
+            TimelineEventKind::PlainText { .. } => None,
+        };
+
+        let Some(msg) = msg else {
+            continue;
+        };
+
+        let thread = match any_timeline_event_thread(&msg) {
+            Some(root) => ReceiptThread::Thread(root),
+            None => ReceiptThread::Main,
+        };
+
+        let mut locked = store.lock().await;
+        let ChatStore { presences, rooms, previews, settings, .. } = &mut locked.application;
+        let info = rooms.get_or_default(room_id.to_owned());
+
+        if info.remove_encrypted(&event_id) {
+            insert_msgs_and_receipts(
+                vec![(msg, thread, vec![])],
+                info,
+                presences,
+                previews,
+                settings,
+            );
+        }
+    }
+}
+
+/// Swap in decrypted messages whenever new room keys arrive, whether from the key backup, a key
+/// import, or a late key share.
+async fn redecrypt_forever(client: &Client, store: &AsyncProgramStore) {
+    let Some(stream) = client.encryption().room_keys_received_stream().await else {
+        return;
+    };
+    let mut stream = std::pin::pin!(stream);
+
+    while let Some(update) = stream.next().await {
+        let Ok(keys) = update else {
+            continue;
+        };
+
+        let mut rooms: HashMap<OwnedRoomId, HashSet<String>> = HashMap::new();
+        for key in keys {
+            rooms.entry(key.room_id).or_default().insert(key.session_id);
+        }
+
+        for (room_id, sessions) in rooms {
+            redecrypt_room(client, store, &room_id, &sessions).await;
+        }
+    }
+}
+
 async fn get_receipts_for_timeline_events(
     room: &MatrixRoom,
     events: Vec<TimelineEvent>,
@@ -407,28 +507,32 @@ async fn get_receipts_for_timeline_events(
                 }
             },
             TimelineEventKind::UnableToDecrypt { event, utd_info, .. } => {
-                let event = match event.deserialize() {
-                    Ok(event) => {
-                        tracing::debug!(
-                            ?utd_info,
-                            room_id = room.room_id().as_str(),
-                            ?event_id,
-                            "Failed to decrypt event"
-                        );
-                        event
-                    },
-                    Err(err) => {
-                        warn!(
-                            ?utd_info,
-                            err = %err,
-                            room_id = room.room_id().as_str(),
-                            ?event_id,
-                            "Failed to deserialize undecrypted event"
-                        );
-                        continue;
-                    },
-                };
-                event.into_full_event(room.room_id().to_owned())
+                if let Some(decrypted) = retry_decrypt(room, &event).await {
+                    decrypted
+                } else {
+                    let event = match event.deserialize() {
+                        Ok(event) => {
+                            tracing::debug!(
+                                ?utd_info,
+                                room_id = room.room_id().as_str(),
+                                ?event_id,
+                                "Failed to decrypt event"
+                            );
+                            event
+                        },
+                        Err(err) => {
+                            warn!(
+                                ?utd_info,
+                                err = %err,
+                                room_id = room.room_id().as_str(),
+                                ?event_id,
+                                "Failed to deserialize undecrypted event"
+                            );
+                            continue;
+                        },
+                    };
+                    event.into_full_event(room.room_id().to_owned())
+                }
             },
             TimelineEventKind::PlainText { event } => {
                 let event = match event.deserialize() {
@@ -2248,8 +2352,9 @@ impl ClientWorker {
                 let notifications = register_notifications(&client, &settings, &store);
                 let sendqueue = subscribe_sendqueue_forever(&client, &store);
                 let spaces = load_space_children_forever(&client, &store);
-                let ((), (), (), (), (), ()) =
-                    tokio::join!(load, room, rcpt, notifications, sendqueue, spaces);
+                let redecrypt = redecrypt_forever(&client, &store);
+                let ((), (), (), (), (), (), ()) =
+                    tokio::join!(load, room, rcpt, notifications, sendqueue, spaces, redecrypt);
             }
         })
         .into();

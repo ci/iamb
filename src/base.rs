@@ -14,7 +14,7 @@ use matrix_sdk::ruma::events::poll::unstable_start::{
 };
 use matrix_sdk::ruma::events::reaction::ReactionEvent;
 use matrix_sdk::ruma::events::relation::Replacement;
-use matrix_sdk::ruma::events::room::encrypted::RoomEncryptedEvent;
+use matrix_sdk::ruma::events::room::encrypted::{EncryptedEventScheme, RoomEncryptedEvent};
 use matrix_sdk::ruma::events::room::message::RelationWithoutReplacement;
 use matrix_sdk::ruma::events::room::message::{
     RoomMessageEvent,
@@ -2047,6 +2047,52 @@ impl RoomInfo {
         self.insert_msglike(event_id, None, msg.into());
     }
 
+    /// Undecryptable messages that were encrypted with any of the given Megolm sessions.
+    pub fn undecrypted_events(&self, sessions: &HashSet<String>) -> Vec<OwnedEventId> {
+        std::iter::once(&self.messages)
+            .chain(self.threads.values())
+            .flat_map(|msgs| msgs.values())
+            .filter_map(|msg| {
+                let MessageEvent::EncryptedOriginal(ev) = &msg.event else {
+                    return None;
+                };
+                let EncryptedEventScheme::MegolmV1AesSha2(scheme) = &ev.content.scheme else {
+                    return None;
+                };
+
+                sessions.contains(&scheme.session_id).then(|| ev.event_id.clone())
+            })
+            .collect()
+    }
+
+    /// Remove an undecryptable message, so that its decrypted version can take its place.
+    ///
+    /// Returns `false` if the event isn't a loaded, undecryptable message.
+    pub fn remove_encrypted(&mut self, event_id: &EventId) -> bool {
+        let Some(EventLocation::Message(root, key)) = self.keys.get(event_id).cloned() else {
+            return false;
+        };
+
+        let thread = match &root {
+            Some(root) => self.threads.get_mut(root),
+            None => Some(&mut self.messages),
+        };
+        let Some(thread) = thread else {
+            return false;
+        };
+
+        if !thread
+            .get(&key)
+            .is_some_and(|msg| matches!(msg.event, MessageEvent::EncryptedOriginal(_)))
+        {
+            return false;
+        }
+
+        thread.remove(&key);
+        self.keys.remove(event_id);
+        true
+    }
+
     /// Inserts events that couldn't be decrypted into the scrollback.
     pub fn insert_encrypted(&mut self, msg: RoomEncryptedEvent) {
         let event_id = msg.event_id().to_owned();
@@ -3522,6 +3568,60 @@ pub mod tests {
                 events: vec![MSG1_EVID.clone()],
             }
         )],);
+    }
+
+    fn encrypted_event(
+        event_id: &str,
+        session_id: &str,
+        thread: Option<&str>,
+    ) -> RoomEncryptedEvent {
+        let mut content = serde_json::json!({
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "ciphertext": "AwgAEnAC",
+            "device_id": "DEVICE",
+            "sender_key": "sender",
+            "session_id": session_id,
+        });
+        if let Some(root) = thread {
+            content["m.relates_to"] =
+                serde_json::json!({ "rel_type": "m.thread", "event_id": root });
+        }
+
+        serde_json::from_value(serde_json::json!({
+            "type": "m.room.encrypted",
+            "event_id": event_id,
+            "room_id": TEST_ROOM1_ID.as_str(),
+            "sender": "@user2:example.com",
+            "origin_server_ts": 10,
+            "content": content,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_undecrypted_events() {
+        let mut info = mock_room();
+        let root = MSG1_EVID.as_str();
+        info.insert_encrypted(encrypted_event("$a:example.com", "session1", None));
+        info.insert_encrypted(encrypted_event("$b:example.com", "session2", None));
+        info.insert_encrypted(encrypted_event("$c:example.com", "session1", Some(root)));
+
+        let sessions = HashSet::from(["session1".to_string()]);
+        let mut found = info.undecrypted_events(&sessions);
+        found.sort();
+        assert_eq!(found, vec![
+            owned_event_id!("$a:example.com"),
+            owned_event_id!("$c:example.com")
+        ]);
+
+        // Only undecryptable messages get removed, from wherever they live.
+        assert!(!info.remove_encrypted(&MSG1_EVID));
+        assert!(info.remove_encrypted(&owned_event_id!("$a:example.com")));
+        assert!(info.remove_encrypted(&owned_event_id!("$c:example.com")));
+        assert!(!info.remove_encrypted(&owned_event_id!("$c:example.com")));
+        assert!(info.get_event(&owned_event_id!("$c:example.com")).is_none());
+        assert!(info.undecrypted_events(&sessions).is_empty());
+        assert!(info.get_event(&MSG1_EVID).is_some());
     }
 
     #[test]

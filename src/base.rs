@@ -160,6 +160,9 @@ pub enum CatchUpAction {
 
     /// Expand every room.
     ExpandAll,
+
+    /// Collapse every room, or expand them all if they're already collapsed.
+    ToggleAll,
 }
 
 /// An action taken against a room's timeline.

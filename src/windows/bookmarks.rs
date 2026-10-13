@@ -163,4 +163,9 @@ pub fn fetch_missing(store: &mut ChatStore, items: &[BookmarkItem]) {
     for (room_id, event_ids) in missing {
         store.need_load.need_events(room_id, event_ids);
     }
+
+    // Load display names for the rooms, in case they haven't been opened yet.
+    for item in items {
+        store.need_members_once(item.room_id());
+    }
 }

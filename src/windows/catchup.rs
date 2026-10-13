@@ -292,6 +292,11 @@ impl CatchUpFeed {
 
         self.add_rooms(store);
 
+        for room_id in self.order.iter() {
+            // Load display names for rooms that haven't been opened yet.
+            store.need_members_once(room_id);
+        }
+
         let ChatStore {
             rooms, worker, settings, pending_reads, need_load, ..
         } = store;

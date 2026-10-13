@@ -2722,6 +2722,9 @@ pub struct ChatStore {
 
     /// Bookmarked messages from every room.
     pub bookmarks: Bookmarks,
+
+    /// Rooms whose members we've asked to load, to show display names.
+    members_requested: HashSet<OwnedRoomId>,
 }
 
 impl ChatStore {
@@ -2755,9 +2758,17 @@ impl ChatStore {
             profile_changes: Default::default(),
             pending_reads: Default::default(),
             bookmarks: Default::default(),
+            members_requested: Default::default(),
         };
 
         Ok(store)
+    }
+
+    /// Load a room's members to show their display names, unless that's already been asked for.
+    pub fn need_members_once(&mut self, room_id: &RoomId) {
+        if self.members_requested.insert(room_id.to_owned()) {
+            self.need_load.need_members(room_id.to_owned());
+        }
     }
 
     /// Replace a room's bookmarks with what's in its account data.

@@ -129,6 +129,15 @@ pub enum CatchUpAction {
 
     /// Rebuild the window, dropping messages that have been read.
     Refresh,
+
+    /// Collapse the selected room into a single row, or expand it again.
+    Toggle,
+
+    /// Collapse every room.
+    CollapseAll,
+
+    /// Expand every room.
+    ExpandAll,
 }
 
 /// An action taken against a room's timeline.

@@ -582,6 +582,9 @@ impl IambWindow {
 
         match act {
             CatchUpAction::Read(scope) => catchup::mark_read(state, scope, store),
+            CatchUpAction::Toggle | CatchUpAction::CollapseAll | CatchUpAction::ExpandAll => {
+                catchup::fold(state, feed, &act, store)
+            },
             CatchUpAction::Refresh => {
                 feed.refresh();
                 catchup::update(state, feed, store);

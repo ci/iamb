@@ -535,6 +535,9 @@ fn iamb_catchup(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
         ["read", "all"] => CatchUpAction::Read(CatchUpScope::All),
         ["undo"] => CatchUpAction::Undo,
         ["refresh"] => CatchUpAction::Refresh,
+        ["toggle"] => CatchUpAction::Toggle,
+        ["collapse"] => CatchUpAction::CollapseAll,
+        ["expand"] => CatchUpAction::ExpandAll,
         _ => return Result::Err(CommandError::InvalidArgument),
     };
 

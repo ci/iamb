@@ -413,7 +413,7 @@ fn complete_iamb_unreads(args: Vec<String>) -> Vec<String> {
 /// Tab completion for `:catchup`
 fn complete_iamb_catchup(args: Vec<String>) -> Vec<String> {
     let options: &[&str] = match args.len() {
-        1 => &["read", "undo", "refresh"],
+        1 => &["read", "undo", "refresh", "toggle", "collapse", "expand"],
         2 if args[0] == "read" => &["room", "above", "all"],
         _ => &[],
     };

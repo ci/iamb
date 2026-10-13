@@ -809,6 +809,9 @@ pub enum IambAction {
 
     /// Clear all unread messages.
     ClearUnreads,
+
+    /// Show information about a user, or the selected message's sender.
+    Whois(Option<String>),
 }
 
 impl IambAction {
@@ -879,6 +882,7 @@ impl ApplicationAction for IambAction {
             IambAction::CatchUp(..) => SequenceStatus::Break,
             IambAction::ChangeTheme(..) => SequenceStatus::Break,
             IambAction::ClearUnreads => SequenceStatus::Break,
+            IambAction::Whois(..) => SequenceStatus::Break,
             IambAction::Homeserver(..) => SequenceStatus::Break,
             IambAction::Keys(..) => SequenceStatus::Break,
             IambAction::Message(..) => SequenceStatus::Break,
@@ -901,6 +905,7 @@ impl ApplicationAction for IambAction {
             IambAction::CatchUp(..) => SequenceStatus::Atom,
             IambAction::ChangeTheme(..) => SequenceStatus::Atom,
             IambAction::ClearUnreads => SequenceStatus::Atom,
+            IambAction::Whois(..) => SequenceStatus::Atom,
             IambAction::Homeserver(..) => SequenceStatus::Atom,
             IambAction::Keys(..) => SequenceStatus::Atom,
             IambAction::Message(..) => SequenceStatus::Atom,
@@ -923,6 +928,7 @@ impl ApplicationAction for IambAction {
             IambAction::CatchUp(..) => SequenceStatus::Ignore,
             IambAction::ChangeTheme(..) => SequenceStatus::Ignore,
             IambAction::ClearUnreads => SequenceStatus::Ignore,
+            IambAction::Whois(..) => SequenceStatus::Ignore,
             IambAction::Homeserver(..) => SequenceStatus::Ignore,
             IambAction::Keys(..) => SequenceStatus::Ignore,
             IambAction::Message(..) => SequenceStatus::Ignore,
@@ -945,6 +951,7 @@ impl ApplicationAction for IambAction {
             IambAction::CatchUp(..) => false,
             IambAction::ChangeTheme(..) => false,
             IambAction::ClearUnreads => false,
+            IambAction::Whois(..) => false,
             IambAction::Homeserver(..) => false,
             IambAction::Message(..) => false,
             IambAction::Space(..) => false,

@@ -76,6 +76,7 @@ mod preview;
 mod profile_changes;
 mod util;
 mod verifications;
+mod whois;
 mod windows;
 mod worker;
 
@@ -631,6 +632,22 @@ impl Application {
             },
             IambAction::CatchUp(act) => {
                 self.screen.current_window_mut()?.catchup_command(act, store)?
+            },
+
+            IambAction::Whois(user) => {
+                let user_id = match user {
+                    Some(user) => {
+                        OwnedUserId::try_from(user.as_str())
+                            .map_err(|_| IambError::InvalidUserId(user))?
+                    },
+                    None => {
+                        self.screen.current_window_mut()?.selected_user(store).ok_or_else(|| {
+                            UIError::Failure("Select a message or member, or give a user ID".into())
+                        })?
+                    },
+                };
+
+                return whois::whois(user_id, store).await;
             },
 
             IambAction::ToggleScrollbackFocus => {

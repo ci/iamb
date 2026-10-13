@@ -591,6 +591,19 @@ fn iamb_nicks(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     return Ok(step);
 }
 
+fn iamb_whois(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    let mut args = desc.arg.strings()?;
+
+    if args.len() > 1 {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let act = IambAction::Whois(args.pop());
+    let step = CommandStep::Continue(act.into(), ctx.context.clone());
+
+    return Ok(step);
+}
+
 fn iamb_invites(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     if !desc.arg.text.is_empty() {
         return Result::Err(CommandError::InvalidArgument);
@@ -1385,6 +1398,11 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         f: iamb_bookmarks,
     });
     cmds.add_command(ProgramCommand { name: "self".into(), aliases: vec![], f: iamb_self });
+    cmds.add_command(ProgramCommand {
+        name: "whois".into(),
+        aliases: vec![],
+        f: iamb_whois,
+    });
     cmds.add_command(ProgramCommand {
         name: "theme".into(),
         aliases: vec![],

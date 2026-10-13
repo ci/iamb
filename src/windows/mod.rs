@@ -561,6 +561,18 @@ impl IambWindow {
         }
     }
 
+    /// The user that `:whois` should describe when not given one: the selected message's sender,
+    /// or the selected room member.
+    pub fn selected_user(&self, store: &ProgramStore) -> Option<OwnedUserId> {
+        match self {
+            IambWindow::Room(state) => state.selected_sender(store),
+            IambWindow::MemberList(state, _, _) => {
+                state.get().map(|item| item.member.user_id().to_owned())
+            },
+            _ => None,
+        }
+    }
+
     pub async fn timeline_command(
         &mut self,
         act: TimelineAction,

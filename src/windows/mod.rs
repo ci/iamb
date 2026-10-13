@@ -569,6 +569,11 @@ impl IambWindow {
             IambWindow::MemberList(state, _, _) => {
                 state.get().map(|item| item.member.user_id().to_owned())
             },
+            IambWindow::CatchUp(..) | IambWindow::BookmarkList(..) | IambWindow::PinnedList(..) => {
+                let (room_id, event_id) = self.selected_message(store)?;
+                let info = store.application.rooms.get(&room_id)?;
+                info.get_pinned(&event_id).map(|msg| msg.sender.clone())
+            },
             _ => None,
         }
     }

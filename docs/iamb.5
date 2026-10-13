@@ -1177,6 +1177,15 @@ mode.
 .Pp
 Multiple modes can be given together by separating their names with
 .Dq Sy | .
+.Pp
+In
+.Sy Normal
+mode, a key that's a complete command on its own, such as
+.Sy <Space>
+or
+.Sy \&, ,
+becomes a prefix once a macro of more than one key starts with it, so it can be used as a leader key.
+It then no longer runs its usual command, and typing it before a key that isn't part of a macro just runs that key.
 .Ss Example 1: Use "jj" to exit Insert mode
 .Bd -literal -offset indent
 [macros.insert]
@@ -1186,6 +1195,12 @@ Multiple modes can be given together by separating their names with
 .Bd -literal -offset indent
 [macros."normal|visual"]
 "V" = "<C-W>m"
+.Ed
+.Ss Example 3: Use <Space> as a leader key
+.Bd -literal -offset indent
+[macros.normal]
+"<Space>gc" = ":chats<Enter>"
+"<Space>gd" = ":dms<Enter>"
 .Ed
 .Sh DIRECTORIES
 Specifies the directories to save data in.

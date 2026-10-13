@@ -2,11 +2,13 @@
 //!
 //! The keybindings are set up here. We define some iamb-specific keybindings, but the default Vim
 //! keys come from [modalkit::env::vim::keybindings].
+use std::collections::HashSet;
+
 use modalkit::actions::MacroAction;
 use modalkit::env::CommonKeyClass;
 use modalkit::env::vim::VimMode;
 use modalkit::env::vim::keybindings::{InputStep, VimBindings};
-use modalkit::keybindings::{EdgeEvent, EdgeRepeat, InputBindings};
+use modalkit::keybindings::{BindingMachine, EdgeEvent, EdgeRepeat, InputBindings};
 
 use crate::base::{Keybindings, MATRIX_ID_WORD};
 use crate::config::Keys;
@@ -67,8 +69,34 @@ pub fn setup_keybindings(tunables: &TunableValues) -> Keybindings {
     ism
 }
 
+/// Whether a key is a complete command on its own in Normal mode, like `<Space>` or `,`, rather
+/// than the start of a longer one, like `g` or `<C-W>`.
+fn is_normal_command(key: &TerminalKey, tunables: &TunableValues) -> bool {
+    let mut probe = setup_keybindings(tunables);
+    probe.input_key(*key);
+    probe.pop().is_some()
+}
+
 impl InputBindings<TerminalKey, IambStep> for ApplicationSettings {
     fn setup(&self, bindings: &mut Keybindings) {
+        // A Normal mode key that's already a complete command would run straight away, so turn it
+        // into a prefix when a macro starts with it, letting keys like <Space> act as a leader.
+        // Keys that already start longer commands are left alone, since this would break those.
+        let leaders = self
+            .macros
+            .iter()
+            .filter(|(modes, _)| modes.0.contains(&VimMode::Normal))
+            .flat_map(|(_, keys)| keys.keys())
+            .filter(|Keys(input, _)| input.len() > 1)
+            .map(|Keys(input, _)| input[0])
+            .collect::<HashSet<_>>();
+
+        for key in leaders {
+            if is_normal_command(&key, &self.tunables) {
+                bindings.add_prefix(VimMode::Normal, &[once(&key)], &None);
+            }
+        }
+
         for (modes, keys) in &self.macros {
             for (Keys(input, _), Keys(_, run)) in keys {
                 let act = MacroAction::Run(run.clone(), Count::Contextual);
@@ -80,5 +108,67 @@ impl InputBindings<TerminalKey, IambStep> for ApplicationSettings {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::mock_settings;
+
+    /// The actions that running a sequence of keys produces, with the given macros.
+    fn run(macros: &str, input: &[&str]) -> Vec<String> {
+        let mut settings = mock_settings();
+        settings.macros = toml::from_str(macros).unwrap();
+
+        let mut bindings = setup_keybindings(&settings.tunables);
+        settings.setup(&mut bindings);
+
+        for key in input {
+            bindings.input_key(key.parse::<TerminalKey>().unwrap());
+        }
+
+        std::iter::from_fn(|| bindings.pop())
+            .map(|(act, _)| format!("{act:?}"))
+            .filter(|act| !act.contains("Checkpoint"))
+            .collect()
+    }
+
+    #[test]
+    fn test_leader_macros() {
+        let macros = "[normal]\n\"<Space>gc\" = \":chats<Enter>\"\n\",d\" = \":dms<Enter>\"\n";
+        let chats = vec![r#"Macro(Run(":chats<Enter>", Contextual))"#.to_string()];
+        let dms = vec![r#"Macro(Run(":dms<Enter>", Contextual))"#.to_string()];
+
+        assert_eq!(run(macros, &["<Space>", "g", "c"]), chats);
+        assert_eq!(run(macros, &[",", "d"]), dms);
+
+        // Without the macros, <Space> moves straight away.
+        assert_eq!(run("", &["<Space>"]).len(), 1);
+        assert!(run("", &["<Space>"])[0].contains("Motion"));
+    }
+
+    #[test]
+    fn test_prefix_macros_keep_vim_keys() {
+        let macros = "[normal]\n\"gx\" = \":chats<Enter>\"\n\"<C-W>q\" = \":dms<Enter>\"\n";
+
+        assert_eq!(run(macros, &["g", "x"]), vec![r#"Macro(Run(":chats<Enter>", Contextual))"#]);
+        assert_eq!(run(macros, &["g", "g"]), run("", &["g", "g"]));
+        assert_eq!(run(macros, &["<C-W>", "v"]), run("", &["<C-W>", "v"]));
+        assert_eq!(run(macros, &["<C-W>", "m"]), run("", &["<C-W>", "m"]));
+        assert!(!run("", &["g", "g"]).is_empty());
+    }
+
+    #[test]
+    fn test_insert_macros_unchanged() {
+        let macros = "[insert]\n\"jj\" = \"<Esc>\"\n";
+        let mut settings = mock_settings();
+        settings.macros = toml::from_str(macros).unwrap();
+        let mut bindings = setup_keybindings(&settings.tunables);
+        settings.setup(&mut bindings);
+
+        // Normal mode <Space> still moves, since the macro is only for Insert mode.
+        bindings.input_key("<Space>".parse::<TerminalKey>().unwrap());
+        assert!(format!("{:?}", bindings.pop()).contains("Motion"));
     }
 }

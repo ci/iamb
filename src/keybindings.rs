@@ -93,7 +93,8 @@ impl InputBindings<TerminalKey, IambStep> for ApplicationSettings {
 
         for key in leaders {
             if is_normal_command(&key, &self.tunables) {
-                bindings.add_prefix(VimMode::Normal, &[once(&key)], &None);
+                // An empty step on a key with mappings after it waits for more input.
+                bindings.add_mapping(VimMode::Normal, &[once(&key)], &IambStep::new());
             }
         }
 
@@ -142,6 +143,16 @@ mod tests {
 
         assert_eq!(run(macros, &["<Space>", "g", "c"]), chats);
         assert_eq!(run(macros, &[",", "d"]), dms);
+
+        // The keys after the leader still do what they normally do on their own.
+        for keys in [vec!["g", "c"], vec!["d", "d"], vec!["w"], vec!["c", "w"]] {
+            assert_eq!(run(macros, &keys), run("", &keys), "{keys:?}");
+        }
+        let macros = "[normal]\n\"<Space>w\" = \":whois<Enter>\"\n";
+        assert_eq!(run(macros, &["w"]), run("", &["w"]));
+        assert_eq!(run(macros, &["<Space>", "w"]), vec![
+            r#"Macro(Run(":whois<Enter>", Contextual))"#
+        ]);
 
         // Without the macros, <Space> moves straight away.
         assert_eq!(run("", &["<Space>"]).len(), 1);

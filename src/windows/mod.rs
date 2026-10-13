@@ -18,6 +18,7 @@ use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::room::RoomType as MatrixRoomType;
 use matrix_sdk::ruma::{RoomAliasId, RoomOrAliasId};
+use modalkit::actions::EditAction;
 use modalkit::editing::context::EditContext;
 use modalkit_ratatui::Window;
 use modalkit_ratatui::list::{List, ListCursor, ListItem, ListState};
@@ -582,9 +583,10 @@ impl IambWindow {
 
         match act {
             CatchUpAction::Read(scope) => catchup::mark_read(state, scope, store),
-            CatchUpAction::Toggle | CatchUpAction::CollapseAll | CatchUpAction::ExpandAll => {
-                catchup::fold(state, feed, &act, store)
-            },
+            CatchUpAction::Toggle |
+            CatchUpAction::CollapseAll |
+            CatchUpAction::ExpandAll |
+            CatchUpAction::ToggleAll => catchup::fold(state, feed, &act, store),
             CatchUpAction::Refresh => {
                 feed.refresh();
                 catchup::update(state, feed, store);
@@ -723,6 +725,15 @@ impl Editable<ProgramContext, ProgramStore, IambInfo> for IambWindow {
         ctx: &ProgramContext,
         store: &mut ProgramStore,
     ) -> EditResult<EditInfo, IambInfo> {
+        // Section and paragraph motions move between rooms in :catchup.
+        if let IambWindow::CatchUp(state, _) = self &&
+            let EditorAction::Edit(op, EditTarget::Motion(motion, count)) = act &&
+            ctx.resolve(op) == EditAction::Motion &&
+            let MoveType::SectionBegin(dir) | MoveType::ParagraphBegin(dir) = motion
+        {
+            return catchup::jump_room(state, *dir, ctx.resolve(count), store);
+        }
+
         delegate!(self, w => w.editor_command(act, ctx, store))
     }
 }

@@ -217,6 +217,13 @@ impl CatchUpFeed {
             },
             CatchUpAction::CollapseAll => self.collapsed.extend(self.order.iter().cloned()),
             CatchUpAction::ExpandAll => self.collapsed.clear(),
+            CatchUpAction::ToggleAll => {
+                if self.order.iter().all(|room_id| self.collapsed.contains(room_id)) {
+                    self.collapsed.clear();
+                } else {
+                    self.collapsed.extend(self.order.iter().cloned());
+                }
+            },
             _ => {},
         }
     }
@@ -381,6 +388,46 @@ fn fold_cursor(items: &[CatchUpItem], room_id: &RoomId) -> Option<usize> {
         .find(|(_, item)| item.collapsed || !item.read)
         .or_else(|| in_room().next())
         .map(|(idx, _)| idx)
+}
+
+/// Where moving `count` rooms forward or back from `idx` lands: the first item of that room.
+///
+/// Moving back first goes to the start of the current room, like Vim's `[[`.
+fn room_jump(items: &[CatchUpItem], idx: usize, dir: MoveDir1D, count: usize) -> Option<usize> {
+    let starts = (0..items.len())
+        .filter(|&i| i == 0 || items[i].room_id != items[i - 1].room_id)
+        .collect::<Vec<_>>();
+
+    match dir {
+        MoveDir1D::Next => {
+            let next = starts.iter().filter(|&&start| start > idx).nth(count.saturating_sub(1));
+            next.or_else(|| starts.last()).copied()
+        },
+        MoveDir1D::Previous => {
+            let prev = starts
+                .iter()
+                .rev()
+                .filter(|&&start| start < idx)
+                .nth(count.saturating_sub(1));
+            prev.or_else(|| starts.first()).copied()
+        },
+    }
+}
+
+/// Move the cursor to the start of the next or previous room.
+pub fn jump_room(
+    state: &mut CatchUpListState,
+    dir: MoveDir1D,
+    count: usize,
+    store: &mut ProgramStore,
+) -> EditResult<EditInfo, IambInfo> {
+    let idx = selected_index(state).unwrap_or_default();
+
+    if let Some(target) = room_jump(state.get_items(), idx, dir, count) {
+        select(state, target, store);
+    }
+
+    Ok(None)
 }
 
 /// Collapse or expand rooms, keeping the cursor on the room it was in.
@@ -674,6 +721,66 @@ mod tests {
         assert_eq!(fold_cursor(&read, room_id!("!c:example.com")), None);
     }
 
+    #[tokio::test]
+    async fn test_room_motion_keys() {
+        use crate::keybindings::setup_keybindings;
+        use crate::windows::IambWindow;
+        use modalkit::keybindings::BindingMachine;
+
+        let mut store = mock_store().await;
+        let mut win = IambWindow::CatchUp(mock_state(false), CatchUpFeed::default());
+        let mut bindings = setup_keybindings(&store.application.settings.tunables);
+
+        let mut press = |keys: &[&str], win: &mut IambWindow| {
+            for key in keys {
+                bindings.input_key(key.parse().unwrap());
+            }
+            while let Some((act, ctx)) = bindings.pop() {
+                if let Action::Editor(act) = act {
+                    win.editor_command(&act, &ctx, &mut store).unwrap();
+                }
+            }
+            let IambWindow::CatchUp(state, _) = win else {
+                unreachable!()
+            };
+            selected_index(state)
+        };
+
+        // The first room has three messages, so the second starts at the fourth item.
+        assert_eq!(press(&["]", "]"], &mut win), Some(3));
+        assert_eq!(press(&["j"], &mut win), Some(4));
+        assert_eq!(press(&["[", "["], &mut win), Some(3));
+        assert_eq!(press(&["{"], &mut win), Some(0));
+        assert_eq!(press(&["}"], &mut win), Some(3));
+    }
+
+    #[test]
+    fn test_room_jump() {
+        let items = vec![
+            item("!a:example.com", &MSG1_EVID, 1, false),
+            item("!a:example.com", &MSG2_EVID, 2, false),
+            collapsed_room("!b:example.com", None),
+            item("!c:example.com", &MSG3_EVID, 3, false),
+            item("!c:example.com", &MSG4_EVID, 4, false),
+        ];
+        let next = MoveDir1D::Next;
+        let prev = MoveDir1D::Previous;
+
+        assert_eq!(room_jump(&items, 0, next, 1), Some(2));
+        assert_eq!(room_jump(&items, 1, next, 1), Some(2));
+        assert_eq!(room_jump(&items, 0, next, 2), Some(3));
+        // Going past the last room stops at it.
+        assert_eq!(room_jump(&items, 3, next, 1), Some(3));
+        assert_eq!(room_jump(&items, 0, next, 9), Some(3));
+
+        // Back from inside a room goes to its start first.
+        assert_eq!(room_jump(&items, 4, prev, 1), Some(3));
+        assert_eq!(room_jump(&items, 3, prev, 1), Some(2));
+        assert_eq!(room_jump(&items, 4, prev, 2), Some(2));
+        assert_eq!(room_jump(&items, 1, prev, 5), Some(0));
+        assert_eq!(room_jump(&[], 0, next, 1), None);
+    }
+
     #[test]
     fn test_fold() {
         let mut feed = CatchUpFeed::default();
@@ -689,6 +796,14 @@ mod tests {
         feed.fold(&CatchUpAction::CollapseAll, None);
         assert_eq!(feed.collapsed, HashSet::from([a, b]));
         feed.fold(&CatchUpAction::ExpandAll, None);
+        assert!(feed.collapsed.is_empty());
+
+        // Toggling all collapses everything unless it's all collapsed already.
+        let first = feed.order[0].clone();
+        feed.fold(&CatchUpAction::Toggle, Some(&first));
+        feed.fold(&CatchUpAction::ToggleAll, None);
+        assert_eq!(feed.collapsed.len(), 2);
+        feed.fold(&CatchUpAction::ToggleAll, None);
         assert!(feed.collapsed.is_empty());
     }
 

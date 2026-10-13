@@ -2728,11 +2728,15 @@ pub struct ChatStore {
 
     /// Rooms whose members we've asked to load, to show display names.
     members_requested: HashSet<OwnedRoomId>,
+
+    /// Rooms collapsed in the `:catchup` window, shared between its windows and saved to disk.
+    pub catchup_collapsed: HashSet<OwnedRoomId>,
 }
 
 impl ChatStore {
     /// Create a new [ChatStore].
     pub fn new(worker: Requester, settings: ApplicationSettings) -> IambResult<Self> {
+        let catchup_collapsed = crate::catchup::load_folds(&settings.catchup_json);
         let previews = PreviewManager::new(&settings);
         let cmds = crate::commands::setup_commands(&settings.aliases)?;
 
@@ -2762,6 +2766,7 @@ impl ChatStore {
             pending_reads: Default::default(),
             bookmarks: Default::default(),
             members_requested: Default::default(),
+            catchup_collapsed,
         };
 
         Ok(store)

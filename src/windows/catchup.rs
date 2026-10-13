@@ -8,7 +8,7 @@ use modalkit::actions::{EditAction, EditorActions};
 use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
 
 use crate::base::CatchUpScope;
-use crate::catchup::{ReadPoint, unread_messages};
+use crate::catchup::{ReadPoint, save_folds, unread_messages};
 use crate::prelude::*;
 use crate::windows::list_previews::{self, PreviewItem};
 
@@ -213,36 +213,44 @@ pub struct CatchUpFeed {
 
     /// When we last asked to load older messages for each room.
     loads: HashMap<OwnedRoomId, (Instant, u8)>,
-
-    /// Rooms shown as a single row.
-    collapsed: HashSet<OwnedRoomId>,
 }
 
 impl CatchUpFeed {
-    /// Forget everything that's been read, and recompute the room order.
+    /// Forget everything that's been read, and recompute the room order. Collapsed rooms stay
+    /// collapsed.
     pub fn refresh(&mut self) {
         self.order.clear();
         self.seen.clear();
-        self.collapsed.clear();
     }
 
-    /// Collapse or expand rooms.
-    fn fold(&mut self, act: &CatchUpAction, room_id: Option<&RoomId>) {
+    /// Collapse or expand rooms in the set of collapsed rooms.
+    fn fold(
+        &self,
+        collapsed: &mut HashSet<OwnedRoomId>,
+        act: &CatchUpAction,
+        room_id: Option<&RoomId>,
+    ) {
         match act {
             CatchUpAction::Toggle => {
                 if let Some(room_id) = room_id &&
-                    !self.collapsed.remove(room_id)
+                    !collapsed.remove(room_id)
                 {
-                    self.collapsed.insert(room_id.to_owned());
+                    collapsed.insert(room_id.to_owned());
                 }
             },
-            CatchUpAction::CollapseAll => self.collapsed.extend(self.order.iter().cloned()),
-            CatchUpAction::ExpandAll => self.collapsed.clear(),
+            CatchUpAction::CollapseAll => collapsed.extend(self.order.iter().cloned()),
+            CatchUpAction::ExpandAll => collapsed.clear(),
             CatchUpAction::ToggleAll => {
-                if self.order.iter().all(|room_id| self.collapsed.contains(room_id)) {
-                    self.collapsed.clear();
+                // Only rooms with something to show can be seen to be collapsed.
+                let mut shown = self
+                    .order
+                    .iter()
+                    .filter(|room_id| self.seen.get(*room_id).is_some_and(|seen| !seen.is_empty()));
+
+                if shown.all(|room_id| collapsed.contains(room_id)) {
+                    collapsed.clear();
                 } else {
-                    self.collapsed.extend(self.order.iter().cloned());
+                    collapsed.extend(self.order.iter().cloned());
                 }
             },
             _ => {},
@@ -305,7 +313,13 @@ impl CatchUpFeed {
         }
 
         let ChatStore {
-            rooms, worker, settings, pending_reads, need_load, ..
+            rooms,
+            worker,
+            settings,
+            pending_reads,
+            need_load,
+            catchup_collapsed,
+            ..
         } = store;
         let user_id = &settings.profile.user_id;
         let mut items = vec![];
@@ -345,7 +359,7 @@ impl CatchUpFeed {
             let unread = seen.keys().filter(|key| !read.has_read(key)).count();
             let section = CatchUpSection { room_id: room_id.clone(), title, unread };
 
-            if self.collapsed.contains(room_id) {
+            if catchup_collapsed.contains(room_id) {
                 items.extend(collapsed_item(seen, &read, section));
                 continue;
             }
@@ -426,8 +440,9 @@ fn room_jump(items: &[CatchUpItem], idx: usize, dir: MoveDir1D, count: usize) ->
 
     match dir {
         MoveDir1D::Next => {
+            // Past the last room, go to the end, like Vim's `]]`.
             let next = starts.iter().filter(|&&start| start > idx).nth(count.saturating_sub(1));
-            next.or_else(|| starts.last()).copied()
+            next.copied().or_else(|| items.len().checked_sub(1))
         },
         MoveDir1D::Previous => {
             let prev = starts
@@ -464,7 +479,17 @@ pub fn fold(
     store: &mut ProgramStore,
 ) -> IambResult<EditInfo> {
     let room_id = state.get().map(|item| item.room_id.clone());
-    feed.fold(act, room_id.as_deref());
+    let ChatStore { worker, settings, catchup_collapsed, .. } = &mut store.application;
+    feed.fold(catchup_collapsed, act, room_id.as_deref());
+
+    // Forget rooms that have been left, but keep ones we don't know about yet.
+    catchup_collapsed.retain(|room_id| {
+        worker
+            .client
+            .get_room(room_id)
+            .is_none_or(|room| room.state() == MatrixRoomState::Joined)
+    });
+    save_folds(&settings.catchup_json, catchup_collapsed);
 
     let items = feed.items(&mut store.application);
     let idx = room_id.and_then(|room_id| fold_cursor(&items, &room_id));
@@ -800,9 +825,10 @@ pub(crate) mod tests {
         assert_eq!(room_jump(&items, 0, next, 1), Some(2));
         assert_eq!(room_jump(&items, 1, next, 1), Some(2));
         assert_eq!(room_jump(&items, 0, next, 2), Some(3));
-        // Going past the last room stops at it.
-        assert_eq!(room_jump(&items, 3, next, 1), Some(3));
-        assert_eq!(room_jump(&items, 0, next, 9), Some(3));
+        // Going past the last room goes to the end, never backwards.
+        assert_eq!(room_jump(&items, 3, next, 1), Some(4));
+        assert_eq!(room_jump(&items, 4, next, 1), Some(4));
+        assert_eq!(room_jump(&items, 0, next, 9), Some(4));
 
         // Back from inside a room goes to its start first.
         assert_eq!(room_jump(&items, 4, prev, 1), Some(3));
@@ -812,30 +838,59 @@ pub(crate) mod tests {
         assert_eq!(room_jump(&[], 0, next, 1), None);
     }
 
+    #[tokio::test]
+    async fn test_fold_shared() {
+        let mut store = mock_store().await;
+        let mut state = mock_state(false);
+        let mut feed = CatchUpFeed::default();
+
+        fold(&mut state, &mut feed, &CatchUpAction::Toggle, &mut store).unwrap();
+
+        // Folds live in the shared store, so every :catchup window sees them. Rooms the client
+        // doesn't know about yet aren't treated as left.
+        let room_id = OwnedRoomId::try_from("!a:example.com").unwrap();
+        assert_eq!(store.application.catchup_collapsed, HashSet::from([room_id]));
+    }
+
     #[test]
     fn test_fold() {
         let mut feed = CatchUpFeed::default();
+        let mut collapsed = HashSet::new();
         let a = OwnedRoomId::try_from("!a:example.com").unwrap();
         let b = OwnedRoomId::try_from("!b:example.com").unwrap();
-        feed.order = vec![a.clone(), b.clone()];
+        let c = OwnedRoomId::try_from("!c:example.com").unwrap();
+        feed.order = vec![a.clone(), b.clone(), c.clone()];
+        feed.seen
+            .insert(a.clone(), BTreeMap::from([(key(1, &MSG1_EVID), MSG1_EVID.clone())]));
+        feed.seen
+            .insert(b.clone(), BTreeMap::from([(key(2, &MSG2_EVID), MSG2_EVID.clone())]));
+        // Room c has nothing loaded to show yet.
+        feed.seen.insert(c.clone(), BTreeMap::new());
 
-        feed.fold(&CatchUpAction::Toggle, Some(&a));
-        assert_eq!(feed.collapsed, HashSet::from([a.clone()]));
-        feed.fold(&CatchUpAction::Toggle, Some(&a));
-        assert!(feed.collapsed.is_empty());
+        feed.fold(&mut collapsed, &CatchUpAction::Toggle, Some(&a));
+        assert_eq!(collapsed, HashSet::from([a.clone()]));
+        feed.fold(&mut collapsed, &CatchUpAction::Toggle, Some(&a));
+        assert!(collapsed.is_empty());
 
-        feed.fold(&CatchUpAction::CollapseAll, None);
-        assert_eq!(feed.collapsed, HashSet::from([a, b]));
-        feed.fold(&CatchUpAction::ExpandAll, None);
-        assert!(feed.collapsed.is_empty());
+        feed.fold(&mut collapsed, &CatchUpAction::CollapseAll, None);
+        assert_eq!(collapsed, HashSet::from([a.clone(), b.clone(), c.clone()]));
+        feed.fold(&mut collapsed, &CatchUpAction::ExpandAll, None);
+        assert!(collapsed.is_empty());
 
         // Toggling all collapses everything unless it's all collapsed already.
         let first = feed.order[0].clone();
-        feed.fold(&CatchUpAction::Toggle, Some(&first));
-        feed.fold(&CatchUpAction::ToggleAll, None);
-        assert_eq!(feed.collapsed.len(), 2);
-        feed.fold(&CatchUpAction::ToggleAll, None);
-        assert!(feed.collapsed.is_empty());
+        feed.fold(&mut collapsed, &CatchUpAction::Toggle, Some(&first));
+        feed.fold(&mut collapsed, &CatchUpAction::ToggleAll, None);
+        assert_eq!(collapsed.len(), 3);
+        feed.fold(&mut collapsed, &CatchUpAction::ToggleAll, None);
+        assert!(collapsed.is_empty());
+
+        // Collapsing every shown room by hand counts as all collapsed, even if a room with
+        // nothing to show isn't.
+        feed.fold(&mut collapsed, &CatchUpAction::Toggle, Some(&a));
+        feed.fold(&mut collapsed, &CatchUpAction::Toggle, Some(&b));
+        feed.fold(&mut collapsed, &CatchUpAction::ToggleAll, None);
+        assert!(collapsed.is_empty());
     }
 
     fn mock_state(read_first: bool) -> CatchUpListState {

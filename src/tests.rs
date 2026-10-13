@@ -213,6 +213,7 @@ pub fn mock_tunables() -> TunableValues {
 pub fn mock_settings() -> ApplicationSettings {
     ApplicationSettings {
         layout_json: PathBuf::new(),
+        catchup_json: PathBuf::new(),
         session_json: PathBuf::new(),
         device_json: PathBuf::new(),
         session_json_old: PathBuf::new(),

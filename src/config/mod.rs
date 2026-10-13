@@ -1440,6 +1440,8 @@ impl IambConfig {
 #[derive(Clone)]
 pub struct ApplicationSettings {
     pub layout_json: PathBuf,
+    /// Which rooms are collapsed in the `:catchup` window.
+    pub catchup_json: PathBuf,
     pub session_json: PathBuf,
     pub device_json: PathBuf,
     pub session_json_old: PathBuf,
@@ -1608,12 +1610,15 @@ impl ApplicationSettings {
         let mut layout_json = cache_dir.clone();
         layout_json.push("layout.json");
 
+        let catchup_json = cache_dir.join("catchup.json");
+
         let mut sqlite_cache_dir = cache_dir;
         sqlite_cache_dir.push("sqlite");
 
         let settings = ApplicationSettings {
             sled_dir,
             layout_json,
+            catchup_json,
             session_json,
             device_json,
             session_json_old,

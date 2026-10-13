@@ -867,6 +867,8 @@ pub struct Notifications {
 #[derive(Clone)]
 pub struct ImagePreviewValues {
     pub enabled: bool,
+    /// Whether to show previews in list windows, like `:catchup`, too.
+    pub lists: bool,
     pub size: Size,
     pub protocol: ImagePreviewProtocolValues,
 }
@@ -874,6 +876,7 @@ pub struct ImagePreviewValues {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ImagePreview {
     pub enabled: Option<bool>,
+    pub lists: Option<bool>,
     pub size: Option<Size>,
     pub protocol: Option<ImagePreviewProtocolValues>,
 }
@@ -882,6 +885,7 @@ impl ImagePreview {
     pub fn values(self) -> ImagePreviewValues {
         ImagePreviewValues {
             enabled: self.enabled.unwrap_or(true),
+            lists: self.lists.unwrap_or(true),
             size: self.size.unwrap_or(Size { width: 66, height: 10 }),
             protocol: self.protocol.unwrap_or_default(),
         }

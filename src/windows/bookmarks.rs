@@ -3,6 +3,7 @@ use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
 
 use crate::bookmarks::BookmarkEntry;
 use crate::prelude::*;
+use crate::windows::list_previews::{self, PreviewItem};
 
 pub type BookmarkListState = ListState<BookmarkItem, IambInfo>;
 
@@ -69,8 +70,7 @@ impl ListItem<IambInfo> for BookmarkItem {
 
         match (info, msg) {
             (Some(info), Some(msg)) => {
-                // Lists can't draw images, so show attachments as text.
-                let previews = PreviewManager::text_only();
+                let previews = list_previews::previews(store);
                 let width = vwctx.get_width();
                 text.extend(msg.show(None, selected, width, info, settings, previews));
             },
@@ -87,6 +87,19 @@ impl ListItem<IambInfo> for BookmarkItem {
 
     fn get_word(&self) -> Option<String> {
         self.entry.event_id.to_string().into()
+    }
+}
+
+impl PreviewItem for BookmarkItem {
+    fn preview_message<'a>(
+        &self,
+        store: &'a ProgramStore,
+    ) -> Option<(&'a RoomInfo, &'a Message, Option<&'a Message>, usize)> {
+        let info = store.application.rooms.get(&self.entry.room_id)?;
+        let msg = info.get_pinned(&self.entry.event_id)?;
+
+        // The message follows a line naming the room.
+        Some((info, msg, None, 1))
     }
 }
 
@@ -149,5 +162,10 @@ pub fn fetch_missing(store: &mut ChatStore, items: &[BookmarkItem]) {
 
     for (room_id, event_ids) in missing {
         store.need_load.need_events(room_id, event_ids);
+    }
+
+    // Load display names for the rooms, in case they haven't been opened yet.
+    for item in items {
+        store.need_members_once(item.room_id());
     }
 }

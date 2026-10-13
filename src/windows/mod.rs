@@ -40,12 +40,14 @@ use crate::profile_changes::ProfileChangeEntry;
 use crate::resolve_mxid;
 use crate::windows::bookmarks::{BookmarkItem, BookmarkListState};
 use crate::windows::catchup::{CatchUpFeed, CatchUpListState};
+use crate::windows::list_previews::PreviewItem;
 use crate::windows::room::{RoomState, room_command};
 use crate::windows::verify::VerifyItem;
 use crate::windows::welcome::WelcomeState;
 
 pub mod bookmarks;
 pub mod catchup;
+pub mod list_previews;
 pub mod room;
 pub mod verify;
 pub mod welcome;
@@ -915,6 +917,8 @@ impl WindowOps<IambInfo> for IambWindow {
                     .focus(focused)
                     .style(default_list_style)
                     .render(area, buf, state);
+
+                list_previews::draw(state, area, buf, focused, store);
             },
             IambWindow::RoomList(state) => {
                 let mut items = sync_info
@@ -1091,6 +1095,8 @@ impl WindowOps<IambInfo> for IambWindow {
                     .focus(focused)
                     .style(default_list_style)
                     .render(area, buf, state);
+
+                list_previews::draw(state, area, buf, focused, store);
             },
             IambWindow::BookmarkList(state, last_fetch) => {
                 let items = store
@@ -1115,6 +1121,8 @@ impl WindowOps<IambInfo> for IambWindow {
                     .focus(focused)
                     .style(default_list_style)
                     .render(area, buf, state);
+
+                list_previews::draw(state, area, buf, focused, store);
             },
             IambWindow::SpaceList(state) => {
                 let mut items = sync_info
@@ -2015,13 +2023,24 @@ impl ListItem<IambInfo> for PinnedItem {
             return Span::styled(text, style.fg(Color::Gray)).into();
         };
 
-        // Lists can't draw images, so show attachments as text.
-        let previews = PreviewManager::text_only();
+        let previews = list_previews::previews(store);
         msg.show(None, selected, vwctx.get_width(), info, settings, previews)
     }
 
     fn get_word(&self) -> Option<String> {
         self.event_id.to_string().into()
+    }
+}
+
+impl PreviewItem for PinnedItem {
+    fn preview_message<'a>(
+        &self,
+        store: &'a ProgramStore,
+    ) -> Option<(&'a RoomInfo, &'a Message, Option<&'a Message>, usize)> {
+        let info = store.application.rooms.get(&self.room_id)?;
+        let msg = info.get_pinned(&self.event_id)?;
+
+        Some((info, msg, None, 0))
     }
 }
 

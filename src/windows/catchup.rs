@@ -10,6 +10,7 @@ use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
 use crate::base::CatchUpScope;
 use crate::catchup::{ReadPoint, unread_messages};
 use crate::prelude::*;
+use crate::windows::list_previews::{self, PreviewItem};
 
 /// How long to wait between requests to load older messages for a room.
 const LOAD_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -138,8 +139,7 @@ impl CatchUpItem {
         };
 
         let prev = self.prev.as_ref().and_then(|event_id| info.get_event(event_id));
-        // Lists can't draw images, so show attachments as text; they show in the room itself.
-        let previews = PreviewManager::text_only();
+        let previews = list_previews::previews(store);
         let text = msg.show(prev, selected, vwctx.get_width(), info, settings, previews);
 
         if self.read {
@@ -147,6 +147,23 @@ impl CatchUpItem {
         } else {
             text
         }
+    }
+}
+
+impl PreviewItem for CatchUpItem {
+    fn preview_message<'a>(
+        &self,
+        store: &'a ProgramStore,
+    ) -> Option<(&'a RoomInfo, &'a Message, Option<&'a Message>, usize)> {
+        if self.collapsed {
+            return None;
+        }
+
+        let info = store.application.rooms.get(&self.room_id)?;
+        let msg = info.get_event(&self.event_id)?;
+        let prev = self.prev.as_ref().and_then(|event_id| info.get_event(event_id));
+
+        Some((info, msg, prev, 0))
     }
 }
 
@@ -274,6 +291,11 @@ impl CatchUpFeed {
         self.seen.retain(|room_id, _| joined(room_id));
 
         self.add_rooms(store);
+
+        for room_id in self.order.iter() {
+            // Load display names for rooms that haven't been opened yet.
+            store.need_members_once(room_id);
+        }
 
         let ChatStore {
             rooms, worker, settings, pending_reads, need_load, ..
@@ -524,8 +546,17 @@ pub fn mark_read(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// An item for a room without any loaded information, the `n`th in that room.
+    pub(crate) fn mock_item(room: &str, n: u64) -> CatchUpItem {
+        let local = room.trim_start_matches('!').split(':').next().unwrap();
+        let event_id = OwnedEventId::try_from(format!("${local}{n}:example.com")).unwrap();
+        let mut item = item(room, &event_id, n, false);
+        item.last = n == 1;
+        item
+    }
     use crate::tests::*;
     use matrix_sdk::ruma::room_id;
 
@@ -620,10 +651,6 @@ mod tests {
 
         section.unread = 0;
         assert_eq!(text(section.into()), "▾ general · read");
-
-        // Lists show attachments as text, without image previews.
-        let source = MediaSource::Plain("mxc://example.com/image".into());
-        assert!(PreviewManager::text_only().get(&source, PreviewKind::Message).is_none());
     }
 
     #[test]

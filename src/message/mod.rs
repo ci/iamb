@@ -1171,8 +1171,8 @@ impl Message {
             .unwrap_or(ReceiptThread::Main)
     }
 
-    pub fn message_column_width(
-        viewctx: &ViewportContext<MessageCursor>,
+    pub fn message_column_width<C>(
+        viewctx: &ViewportContext<C>,
         settings: &ApplicationSettings,
     ) -> usize {
         let width = viewctx.get_width();
@@ -2166,7 +2166,8 @@ pub mod tests {
     fn test_time_gutter_width_follows_format() {
         let (ts, dt) = sample_stamp();
         let mut settings = mock_settings();
-        let view = ViewportContext { dimensions: (120, 10), ..Default::default() };
+        let view: ViewportContext<MessageCursor> =
+            ViewportContext { dimensions: (120, 10), ..Default::default() };
         let default_cols = Message::message_column_width(&view, &settings);
 
         // "%H:%M" is five columns and is not padded out to the old gutter.

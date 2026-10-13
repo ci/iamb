@@ -2722,6 +2722,9 @@ pub struct ChatStore {
 
     /// Bookmarked messages from every room.
     pub bookmarks: Bookmarks,
+
+    /// Rooms whose members we've asked to load, to show display names.
+    members_requested: HashSet<OwnedRoomId>,
 }
 
 impl ChatStore {
@@ -2755,9 +2758,35 @@ impl ChatStore {
             profile_changes: Default::default(),
             pending_reads: Default::default(),
             bookmarks: Default::default(),
+            members_requested: Default::default(),
         };
 
         Ok(store)
+    }
+
+    /// Record an event fetched outside of its room's scrollback, like for `:pinned` or `:bookmarks`,
+    /// preparing any image it has to be previewed.
+    pub fn insert_fetched_event(
+        &mut self,
+        room_id: OwnedRoomId,
+        event_id: OwnedEventId,
+        msg: Option<Message>,
+    ) {
+        if self.settings.tunables.image_preview.enabled &&
+            let Some(source) = msg.as_ref().and_then(|msg| msg.image_preview())
+        {
+            self.previews
+                .register_preview(&self.settings, source, PreviewKind::Message);
+        }
+
+        self.rooms.get_or_default(room_id).insert_pinned(event_id, msg);
+    }
+
+    /// Load a room's members to show their display names, unless that's already been asked for.
+    pub fn need_members_once(&mut self, room_id: &RoomId) {
+        if self.members_requested.insert(room_id.to_owned()) {
+            self.need_load.need_members(room_id.to_owned());
+        }
     }
 
     /// Replace a room's bookmarks with what's in its account data.
@@ -3720,6 +3749,32 @@ pub mod tests {
         let msg = info.get_event(&event_id).unwrap();
         assert_eq!(msg.event.body(), "edited");
         assert!(info.undecrypted_sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_insert_fetched_event_previews_images() {
+        let mut store = mock_store().await;
+        store.application.settings.tunables.image_preview.enabled = true;
+
+        let event_id = owned_event_id!("$image:example.com");
+        let msg = message_event(
+            event_id.as_str(),
+            serde_json::json!({
+                "msgtype": "m.image",
+                "body": "cat.png",
+                "url": "mxc://example.com/cat",
+            }),
+        );
+        let msg = Message::from(msg);
+        let source = msg.image_preview().unwrap().clone();
+
+        store
+            .application
+            .insert_fetched_event(TEST_ROOM1_ID.clone(), event_id.clone(), Some(msg));
+
+        let info = store.application.rooms.get(&*TEST_ROOM1_ID).unwrap();
+        assert!(info.get_pinned(&event_id).is_some());
+        assert!(store.application.previews.get(&source, PreviewKind::Message).is_some());
     }
 
     #[test]

@@ -275,7 +275,13 @@ impl CatchUpFeed {
             CatchUpAction::CollapseAll => self.collapsed.extend(self.order.iter().cloned()),
             CatchUpAction::ExpandAll => self.collapsed.clear(),
             CatchUpAction::ToggleAll => {
-                if self.order.iter().all(|room_id| self.collapsed.contains(room_id)) {
+                // Only rooms with something to show can be seen to be collapsed.
+                let shown = self
+                    .order
+                    .iter()
+                    .filter(|room_id| self.seen.get(*room_id).is_some_and(|seen| !seen.is_empty()));
+
+                if shown.clone().all(|room_id| self.collapsed.contains(room_id)) {
                     self.collapsed.clear();
                 } else {
                     self.collapsed.extend(self.order.iter().cloned());
@@ -457,8 +463,9 @@ fn room_jump(items: &[CatchUpItem], idx: usize, dir: MoveDir1D, count: usize) ->
 
     match dir {
         MoveDir1D::Next => {
+            // Past the last room, go to the end, like Vim's `]]`.
             let next = starts.iter().filter(|&&start| start > idx).nth(count.saturating_sub(1));
-            next.or_else(|| starts.last()).copied()
+            next.copied().or_else(|| items.len().checked_sub(1))
         },
         MoveDir1D::Previous => {
             let prev = starts
@@ -827,9 +834,10 @@ mod tests {
         assert_eq!(room_jump(&items, 0, next, 1), Some(2));
         assert_eq!(room_jump(&items, 1, next, 1), Some(2));
         assert_eq!(room_jump(&items, 0, next, 2), Some(3));
-        // Going past the last room stops at it.
-        assert_eq!(room_jump(&items, 3, next, 1), Some(3));
-        assert_eq!(room_jump(&items, 0, next, 9), Some(3));
+        // Going past the last room goes to the end, never backwards.
+        assert_eq!(room_jump(&items, 3, next, 1), Some(4));
+        assert_eq!(room_jump(&items, 4, next, 1), Some(4));
+        assert_eq!(room_jump(&items, 0, next, 9), Some(4));
 
         // Back from inside a room goes to its start first.
         assert_eq!(room_jump(&items, 4, prev, 1), Some(3));
@@ -868,7 +876,14 @@ mod tests {
         let mut feed = CatchUpFeed::default();
         let a = OwnedRoomId::try_from("!a:example.com").unwrap();
         let b = OwnedRoomId::try_from("!b:example.com").unwrap();
-        feed.order = vec![a.clone(), b.clone()];
+        let c = OwnedRoomId::try_from("!c:example.com").unwrap();
+        feed.order = vec![a.clone(), b.clone(), c.clone()];
+        feed.seen
+            .insert(a.clone(), BTreeMap::from([(key(1, &MSG1_EVID), MSG1_EVID.clone())]));
+        feed.seen
+            .insert(b.clone(), BTreeMap::from([(key(2, &MSG2_EVID), MSG2_EVID.clone())]));
+        // Room c has nothing loaded to show yet.
+        feed.seen.insert(c.clone(), BTreeMap::new());
 
         feed.fold(&CatchUpAction::Toggle, Some(&a));
         assert_eq!(feed.collapsed, HashSet::from([a.clone()]));
@@ -876,7 +891,7 @@ mod tests {
         assert!(feed.collapsed.is_empty());
 
         feed.fold(&CatchUpAction::CollapseAll, None);
-        assert_eq!(feed.collapsed, HashSet::from([a, b]));
+        assert_eq!(feed.collapsed, HashSet::from([a.clone(), b.clone(), c.clone()]));
         feed.fold(&CatchUpAction::ExpandAll, None);
         assert!(feed.collapsed.is_empty());
 
@@ -884,7 +899,14 @@ mod tests {
         let first = feed.order[0].clone();
         feed.fold(&CatchUpAction::Toggle, Some(&first));
         feed.fold(&CatchUpAction::ToggleAll, None);
-        assert_eq!(feed.collapsed.len(), 2);
+        assert_eq!(feed.collapsed.len(), 3);
+        feed.fold(&CatchUpAction::ToggleAll, None);
+        assert!(feed.collapsed.is_empty());
+
+        // Collapsing every shown room by hand counts as all collapsed, even if a room with
+        // nothing to show isn't.
+        feed.fold(&CatchUpAction::Toggle, Some(&a));
+        feed.fold(&CatchUpAction::Toggle, Some(&b));
         feed.fold(&CatchUpAction::ToggleAll, None);
         assert!(feed.collapsed.is_empty());
 

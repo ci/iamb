@@ -2,10 +2,11 @@
 //!
 //! Messages stay in the window after being marked as read (dimmed) until it's refreshed, so that
 //! the cursor doesn't jump around while reading through them.
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use modalkit::actions::{EditAction, EditorActions};
 use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
+use serde::{Deserialize, Serialize};
 
 use crate::base::CatchUpScope;
 use crate::catchup::{ReadPoint, unread_messages};
@@ -181,6 +182,45 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for CatchUpItem {
     }
 }
 
+/// What's saved between sessions about the `:catchup` window.
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct SavedFolds {
+    #[serde(default)]
+    collapsed: BTreeSet<OwnedRoomId>,
+}
+
+fn load_folds(path: &Path) -> HashSet<OwnedRoomId> {
+    let saved = match std::fs::read_to_string(path) {
+        Ok(saved) => saved,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashSet::new(),
+        Err(e) => {
+            tracing::warn!(?path, "failed to read collapsed :catchup rooms: {e}");
+            return HashSet::new();
+        },
+    };
+
+    match serde_json::from_str::<SavedFolds>(&saved) {
+        Ok(saved) => saved.collapsed.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(?path, "failed to parse collapsed :catchup rooms: {e}");
+            HashSet::new()
+        },
+    }
+}
+
+fn save_folds(path: &Path, collapsed: &HashSet<OwnedRoomId>) {
+    let saved = SavedFolds { collapsed: collapsed.iter().cloned().collect() };
+    let res = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .transpose()
+        .and_then(|_| std::fs::write(path, serde_json::to_string(&saved)?));
+
+    if let Err(e) = res {
+        tracing::warn!(?path, "failed to save collapsed :catchup rooms: {e}");
+    }
+}
+
 /// The rooms and messages shown in the `:catchup` window.
 #[derive(Default)]
 pub struct CatchUpFeed {
@@ -199,10 +239,27 @@ pub struct CatchUpFeed {
 
 impl CatchUpFeed {
     /// Forget everything that's been read, and recompute the room order.
+    /// A feed with the rooms that were collapsed last time.
+    pub fn new(settings: &ApplicationSettings) -> Self {
+        Self {
+            collapsed: load_folds(&settings.catchup_json),
+            ..Default::default()
+        }
+    }
+
+    /// A new feed for another window, with the same rooms collapsed.
+    pub fn dup(&self) -> Self {
+        Self {
+            collapsed: self.collapsed.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Forget everything that's been read, and recompute the room order. Collapsed rooms stay
+    /// collapsed.
     pub fn refresh(&mut self) {
         self.order.clear();
         self.seen.clear();
-        self.collapsed.clear();
     }
 
     /// Collapse or expand rooms.
@@ -439,6 +496,7 @@ pub fn fold(
 ) -> IambResult<EditInfo> {
     let room_id = state.get().map(|item| item.room_id.clone());
     feed.fold(act, room_id.as_deref());
+    save_folds(&store.application.settings.catchup_json, &feed.collapsed);
 
     let items = feed.items(&mut store.application);
     let idx = room_id.and_then(|room_id| fold_cursor(&items, &room_id));
@@ -782,6 +840,30 @@ mod tests {
     }
 
     #[test]
+    fn test_saved_folds() {
+        let dir = std::env::temp_dir().join(format!("iamb-catchup-test-{}", std::process::id()));
+        let path = dir.join("nested").join("catchup.json");
+        let a = OwnedRoomId::try_from("!a:example.com").unwrap();
+        let b = OwnedRoomId::try_from("!b:example.com").unwrap();
+
+        // Nothing saved yet.
+        assert!(load_folds(&path).is_empty());
+
+        let collapsed = HashSet::from([a.clone(), b.clone()]);
+        save_folds(&path, &collapsed);
+        assert_eq!(load_folds(&path), collapsed);
+
+        save_folds(&path, &HashSet::from([a.clone()]));
+        assert_eq!(load_folds(&path), HashSet::from([a]));
+
+        // A broken file is ignored rather than failing.
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_folds(&path).is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn test_fold() {
         let mut feed = CatchUpFeed::default();
         let a = OwnedRoomId::try_from("!a:example.com").unwrap();
@@ -805,6 +887,13 @@ mod tests {
         assert_eq!(feed.collapsed.len(), 2);
         feed.fold(&CatchUpAction::ToggleAll, None);
         assert!(feed.collapsed.is_empty());
+
+        // Refreshing keeps rooms collapsed.
+        let first = feed.order[0].clone();
+        feed.fold(&CatchUpAction::Toggle, Some(&first));
+        feed.refresh();
+        assert_eq!(feed.collapsed, HashSet::from([first.clone()]));
+        assert_eq!(feed.dup().collapsed, HashSet::from([first]));
     }
 
     fn mock_state(read_first: bool) -> CatchUpListState {

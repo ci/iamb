@@ -2,7 +2,7 @@
 //!
 //! Messages stay in the window after being marked as read (dimmed) until it's refreshed, so that
 //! the cursor doesn't jump around while reading through them.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use modalkit::actions::{EditAction, EditorActions};
 use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
@@ -28,18 +28,24 @@ pub struct CatchUpSection {
 
 impl From<CatchUpSection> for Line<'static> {
     fn from(section: CatchUpSection) -> Self {
-        Line::styled(section.title, Style::default().add_modifier(StyleModifier::BOLD))
+        let title = format!("▾ {}", section.title);
+        Line::styled(title, Style::default().add_modifier(StyleModifier::BOLD))
     }
 }
 
 #[derive(Clone)]
 pub struct CatchUpItem {
     room_id: OwnedRoomId,
+    /// The message, or for a collapsed room, its newest message.
     event_id: OwnedEventId,
     key: MessageKey,
     /// The message shown before this one in the same room.
     prev: Option<OwnedEventId>,
     read: bool,
+    /// How many unread messages this item stands for.
+    unread: usize,
+    /// Whether this item stands in for a whole collapsed room.
+    collapsed: bool,
     section: CatchUpSection,
 }
 
@@ -71,6 +77,33 @@ impl ListItem<IambInfo> for CatchUpItem {
         let settings = &store.application.settings;
         let style = settings.theme.default;
 
+        if self.collapsed {
+            let style = if selected {
+                style.add_modifier(StyleModifier::REVERSED)
+            } else {
+                style
+            };
+            let summary = match self.unread {
+                0 => " — read".to_string(),
+                1 => " — 1 unread".to_string(),
+                n => format!(" — {n} unread"),
+            };
+            let summary_style = if self.unread == 0 {
+                style.fg(Color::Gray)
+            } else {
+                style
+            };
+
+            return Line::from(vec![
+                Span::styled(
+                    format!("▸ {}", self.section.title),
+                    style.add_modifier(StyleModifier::BOLD),
+                ),
+                Span::styled(summary, summary_style),
+            ])
+            .into();
+        }
+
         let Some(info) = store.application.rooms.get(&self.room_id) else {
             return Text::styled("Unable to load room information", style);
         };
@@ -95,7 +128,8 @@ impl ListItem<IambInfo> for CatchUpItem {
     }
 
     fn get_section(&self) -> Option<&Self::Section> {
-        Some(&self.section)
+        // A collapsed room's row already names the room.
+        (!self.collapsed).then_some(&self.section)
     }
 }
 
@@ -107,6 +141,10 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for CatchUpItem {
         _: &mut ProgramStore,
     ) -> EditResult<Vec<(ProgramAction, ProgramContext)>, IambInfo> {
         match act {
+            PromptAction::Submit if self.collapsed => {
+                let expand = IambAction::from(CatchUpAction::Toggle);
+                Ok(vec![(expand.into(), ctx.clone())])
+            },
             PromptAction::Submit => {
                 let room = IambId::Room(self.room_id.clone().into(), RoomView::Main);
                 let open = WindowAction::Switch(OpenTarget::Application(room));
@@ -141,6 +179,9 @@ pub struct CatchUpFeed {
 
     /// When we last asked to load older messages for each room.
     loads: HashMap<OwnedRoomId, (Instant, u8)>,
+
+    /// Rooms shown as a single row.
+    collapsed: HashSet<OwnedRoomId>,
 }
 
 impl CatchUpFeed {
@@ -148,6 +189,23 @@ impl CatchUpFeed {
     pub fn refresh(&mut self) {
         self.order.clear();
         self.seen.clear();
+        self.collapsed.clear();
+    }
+
+    /// Collapse or expand rooms.
+    fn fold(&mut self, act: &CatchUpAction, room_id: Option<&RoomId>) {
+        match act {
+            CatchUpAction::Toggle => {
+                if let Some(room_id) = room_id &&
+                    !self.collapsed.remove(room_id)
+                {
+                    self.collapsed.insert(room_id.to_owned());
+                }
+            },
+            CatchUpAction::CollapseAll => self.collapsed.extend(self.order.iter().cloned()),
+            CatchUpAction::ExpandAll => self.collapsed.clear(),
+            _ => {},
+        }
     }
 
     /// Add any rooms that have newly become unread, most important first.
@@ -239,15 +297,24 @@ impl CatchUpFeed {
 
             let title = info.name.clone().unwrap_or_else(|| "Untitled Matrix Room".into());
             let section = CatchUpSection { room_id: room_id.clone(), title };
+
+            if self.collapsed.contains(room_id) {
+                items.extend(collapsed_item(seen, &read, section));
+                continue;
+            }
+
             let mut prev = None;
 
             for (key, event_id) in seen.iter() {
+                let is_read = read.has_read(key);
                 items.push(CatchUpItem {
                     room_id: room_id.clone(),
                     event_id: event_id.clone(),
                     key: key.clone(),
                     prev: prev.replace(event_id.clone()),
-                    read: read.has_read(key),
+                    read: is_read,
+                    unread: usize::from(!is_read),
+                    collapsed: false,
                     section: section.clone(),
                 });
             }
@@ -258,8 +325,62 @@ impl CatchUpFeed {
 
     /// Number of messages that haven't been read yet.
     pub fn unread(state: &CatchUpListState) -> usize {
-        state.get_items().iter().filter(|item| !item.read).count()
+        state.get_items().iter().map(|item| item.unread).sum()
     }
+}
+
+/// The single row standing in for a collapsed room, pointing at its newest message.
+fn collapsed_item(
+    seen: &BTreeMap<MessageKey, OwnedEventId>,
+    read: &ReadPoint,
+    section: CatchUpSection,
+) -> Option<CatchUpItem> {
+    let (key, event_id) = seen.last_key_value()?;
+    let unread = seen.keys().filter(|key| !read.has_read(key)).count();
+
+    Some(CatchUpItem {
+        room_id: section.room_id.clone(),
+        event_id: event_id.clone(),
+        key: key.clone(),
+        prev: None,
+        read: unread == 0,
+        unread,
+        collapsed: true,
+        section,
+    })
+}
+
+/// Where to put the cursor in a room after folding it: on its collapsed row, or else on its
+/// first unread message.
+fn fold_cursor(items: &[CatchUpItem], room_id: &RoomId) -> Option<usize> {
+    let in_room = || items.iter().enumerate().filter(|(_, item)| item.room_id == room_id);
+
+    in_room()
+        .find(|(_, item)| item.collapsed || !item.read)
+        .or_else(|| in_room().next())
+        .map(|(idx, _)| idx)
+}
+
+/// Collapse or expand rooms, keeping the cursor on the room it was in.
+pub fn fold(
+    state: &mut CatchUpListState,
+    feed: &mut CatchUpFeed,
+    act: &CatchUpAction,
+    store: &mut ProgramStore,
+) -> IambResult<EditInfo> {
+    let room_id = state.get().map(|item| item.room_id.clone());
+    feed.fold(act, room_id.as_deref());
+
+    let items = feed.items(&mut store.application);
+    let idx = room_id.and_then(|room_id| fold_cursor(&items, &room_id));
+
+    state.set(items);
+
+    if let Some(idx) = idx {
+        select(state, idx, store);
+    }
+
+    Ok(None)
 }
 
 fn selected_index(state: &CatchUpListState) -> Option<usize> {
@@ -322,7 +443,7 @@ pub fn mark_read(
             continue;
         }
 
-        count += 1;
+        count += item.unread;
         let target = (item.key.clone(), item.event_id.clone());
         targets
             .entry(item.room_id.clone())
@@ -373,6 +494,7 @@ pub fn mark_read(
 mod tests {
     use super::*;
     use crate::tests::*;
+    use matrix_sdk::ruma::room_id;
 
     fn item(room: &str, event: &OwnedEventId, ts: u64, read: bool) -> CatchUpItem {
         let room_id = OwnedRoomId::try_from(room).unwrap();
@@ -386,8 +508,104 @@ mod tests {
             key,
             prev: None,
             read,
+            unread: usize::from(!read),
+            collapsed: false,
             section,
         }
+    }
+
+    fn key(ts: u64, event: &OwnedEventId) -> MessageKey {
+        let ts = MilliSecondsSinceUnixEpoch(ts.try_into().unwrap());
+        MessageKey { ts: MessageTimeStamp(ts), id: event.clone().into() }
+    }
+
+    fn collapsed_room(room: &str, read_up_to: Option<u64>) -> CatchUpItem {
+        let room_id = OwnedRoomId::try_from(room).unwrap();
+        let section = CatchUpSection { room_id, title: room.into() };
+        let seen = BTreeMap::from([
+            (key(1, &MSG1_EVID), MSG1_EVID.clone()),
+            (key(2, &MSG2_EVID), MSG2_EVID.clone()),
+            (key(3, &MSG3_EVID), MSG3_EVID.clone()),
+        ]);
+        let read = match read_up_to {
+            Some(ts) => ReadPoint::Loaded(key(ts, &MSG1_EVID)),
+            None => ReadPoint::Unknown,
+        };
+
+        collapsed_item(&seen, &read, section).unwrap()
+    }
+
+    #[test]
+    fn test_collapsed_item() {
+        let row = collapsed_room("!a:example.com", Some(1));
+        assert!(row.collapsed);
+        assert_eq!(row.unread, 2);
+        assert!(!row.read);
+        // It points at the newest message, so marking it read covers the whole room.
+        assert_eq!(row.event_id, *MSG3_EVID);
+        assert!(row.get_section().is_none());
+
+        let row = collapsed_room("!a:example.com", Some(3));
+        assert_eq!(row.unread, 0);
+        assert!(row.read);
+
+        assert!(collapsed_item(&BTreeMap::new(), &ReadPoint::Unknown, row.section).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mark_read_collapsed() {
+        let mut store = mock_store().await;
+        let mut state = CatchUpListState::new(IambBufferId::CatchUp, vec![
+            collapsed_room("!a:example.com", None),
+            item("!b:example.com", &MSG4_EVID, 4, false),
+        ]);
+        assert_eq!(CatchUpFeed::unread(&state), 4);
+
+        let res = mark_read(&mut state, CatchUpScope::Selected, &mut store).unwrap();
+        assert!(res.unwrap().to_string().starts_with("Marking 3 messages as read"));
+        assert_eq!(pending(&mut store), vec![("!a:example.com".into(), MSG3_EVID.clone())]);
+        assert_eq!(selected_index(&state), Some(1));
+    }
+
+    #[test]
+    fn test_fold_cursor() {
+        let collapsed = vec![
+            item("!a:example.com", &MSG1_EVID, 1, false),
+            collapsed_room("!b:example.com", None),
+        ];
+        let b = room_id!("!b:example.com");
+        assert_eq!(fold_cursor(&collapsed, b), Some(1));
+
+        // Expanded, the cursor goes to the room's first unread message.
+        let expanded = vec![
+            item("!a:example.com", &MSG1_EVID, 1, false),
+            item("!b:example.com", &MSG2_EVID, 2, true),
+            item("!b:example.com", &MSG3_EVID, 3, false),
+        ];
+        assert_eq!(fold_cursor(&expanded, b), Some(2));
+
+        // With everything read, it goes to the room's first message.
+        let read = vec![item("!b:example.com", &MSG2_EVID, 2, true)];
+        assert_eq!(fold_cursor(&read, b), Some(0));
+        assert_eq!(fold_cursor(&read, room_id!("!c:example.com")), None);
+    }
+
+    #[test]
+    fn test_fold() {
+        let mut feed = CatchUpFeed::default();
+        let a = OwnedRoomId::try_from("!a:example.com").unwrap();
+        let b = OwnedRoomId::try_from("!b:example.com").unwrap();
+        feed.order = vec![a.clone(), b.clone()];
+
+        feed.fold(&CatchUpAction::Toggle, Some(&a));
+        assert_eq!(feed.collapsed, HashSet::from([a.clone()]));
+        feed.fold(&CatchUpAction::Toggle, Some(&a));
+        assert!(feed.collapsed.is_empty());
+
+        feed.fold(&CatchUpAction::CollapseAll, None);
+        assert_eq!(feed.collapsed, HashSet::from([a, b]));
+        feed.fold(&CatchUpAction::ExpandAll, None);
+        assert!(feed.collapsed.is_empty());
     }
 
     fn mock_state(read_first: bool) -> CatchUpListState {

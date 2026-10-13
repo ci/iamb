@@ -120,6 +120,16 @@ in
 .Xr iamb 5 .
 .It Sy ":catchup refresh"
 Drop messages that have been read from the window, and pick up newly unread rooms in order.
+.It Sy ":catchup toggle"
+Collapse the selected message's room into a single row showing how many messages are unread, or
+expand it again.
+Pressing
+.Sy Enter
+on a collapsed room also expands it, and marking it as read marks the whole room.
+.It Sy ":catchup collapse"
+Collapse every room.
+.It Sy ":catchup expand"
+Expand every room.
 .It Sy ":nicks"
 View recent display name and avatar changes, with the same change across several rooms shown once.
 .It Sy ":whois [user]"

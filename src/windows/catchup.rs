@@ -383,12 +383,19 @@ pub fn fold(
     Ok(None)
 }
 
+/// Whether two items are the same row: the same message, or the same collapsed room, whose row
+/// points at a different message whenever the room gets a new one.
+fn same_row(a: &CatchUpItem, b: &CatchUpItem) -> bool {
+    if a.collapsed || b.collapsed {
+        a.collapsed && b.collapsed && a.room_id == b.room_id
+    } else {
+        a.event_id == b.event_id
+    }
+}
+
 fn selected_index(state: &CatchUpListState) -> Option<usize> {
     let selected = state.get()?;
-    state
-        .get_items()
-        .iter()
-        .position(|item| item.event_id == selected.event_id)
+    state.get_items().iter().position(|item| same_row(item, selected))
 }
 
 /// Move the cursor to the item at `idx`.
@@ -400,9 +407,9 @@ fn select(state: &mut CatchUpListState, idx: usize, store: &mut ProgramStore) {
 
 /// Replace the window's items, keeping the cursor on the same message.
 pub fn update(state: &mut CatchUpListState, feed: &mut CatchUpFeed, store: &mut ProgramStore) {
-    let selected = state.get().map(|item| item.event_id.clone());
+    let selected = state.get().cloned();
     let items = feed.items(&mut store.application);
-    let idx = selected.and_then(|sel| items.iter().position(|item| item.event_id == sel));
+    let idx = selected.and_then(|sel| items.iter().position(|item| same_row(item, &sel)));
 
     state.set(items);
 
@@ -565,6 +572,35 @@ mod tests {
         assert!(res.unwrap().to_string().starts_with("Marking 3 messages as read"));
         assert_eq!(pending(&mut store), vec![("!a:example.com".into(), MSG3_EVID.clone())]);
         assert_eq!(selected_index(&state), Some(1));
+    }
+
+    #[test]
+    fn test_same_row() {
+        let a1 = collapsed_room("!a:example.com", None);
+        let mut a2 = collapsed_room("!a:example.com", None);
+        // The room got a newer message since.
+        a2.event_id = MSG4_EVID.clone();
+        let b = collapsed_room("!b:example.com", None);
+        let msg = item("!a:example.com", &MSG3_EVID, 3, false);
+
+        assert!(same_row(&a1, &a2));
+        assert!(!same_row(&a1, &b));
+        // A collapsed room isn't the same row as its newest message once expanded.
+        assert!(!same_row(&a1, &msg));
+        assert!(same_row(&msg, &msg.clone()));
+
+        // The cursor stays on the collapsed room when rows above it shift.
+        let mut state = CatchUpListState::new(IambBufferId::CatchUp, vec![
+            item("!b:example.com", &MSG1_EVID, 1, false),
+            a1,
+        ]);
+        state.set(vec![
+            item("!b:example.com", &MSG1_EVID, 1, false),
+            item("!b:example.com", &MSG2_EVID, 2, false),
+            a2.clone(),
+        ]);
+        let selected = state.get_items()[2].clone();
+        assert!(state.get_items().iter().position(|i| same_row(i, &selected)) == Some(2));
     }
 
     #[test]

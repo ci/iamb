@@ -531,7 +531,10 @@ mod tests {
             (key(3, &MSG3_EVID), MSG3_EVID.clone()),
         ]);
         let read = match read_up_to {
-            Some(ts) => ReadPoint::Loaded(key(ts, &MSG1_EVID)),
+            Some(ts) => {
+                let read = seen.keys().find(|key| u64::from(key.ts.0.get()) == ts).unwrap();
+                ReadPoint::Loaded(read.clone())
+            },
             None => ReadPoint::Unknown,
         };
 

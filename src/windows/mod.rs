@@ -2015,7 +2015,8 @@ impl ListItem<IambInfo> for PinnedItem {
             return Span::styled(text, style.fg(Color::Gray)).into();
         };
 
-        let previews = &store.application.previews;
+        // Lists can't draw images, so show attachments as text.
+        let previews = PreviewManager::text_only();
         msg.show(None, selected, vwctx.get_width(), info, settings, previews)
     }
 

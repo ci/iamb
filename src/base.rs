@@ -51,6 +51,8 @@ use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::bookmarks::Bookmarks;
+use crate::catchup::PendingReads;
 use crate::message::poll::{
     Poll,
     PollEventLocation,
@@ -62,6 +64,7 @@ use crate::message::poll::{
 };
 use crate::notifications::NotificationHandle;
 use crate::prelude::*;
+use crate::profile_changes::ProfileChanges;
 
 /// The set of characters used in different Matrix IDs.
 pub const MATRIX_ID_WORD: WordStyle = WordStyle::CharSet(is_mxid_char);
@@ -101,6 +104,53 @@ pub enum VerifyAction {
 
     /// Start an interactive (SAS) emoji verification
     Emoji,
+}
+
+/// What to do with a bookmark's note when saving it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NoteUpdate {
+    /// Leave an existing note as it is.
+    Keep,
+    /// Replace the note.
+    Set(String),
+    /// Remove the note.
+    Clear,
+}
+
+/// An action on the bookmark for the selected message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BookmarkAction {
+    /// Bookmark the message, or update its note.
+    Save(NoteUpdate),
+
+    /// Remove the message's bookmark.
+    Remove,
+}
+
+/// Which messages in the `:catchup` window to mark as read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CatchUpScope {
+    /// The selected message, and everything before it in the same room.
+    Selected,
+    /// Every message in the selected message's room.
+    Room,
+    /// Every message at or above the selected one.
+    Above,
+    /// Every message in the window.
+    All,
+}
+
+/// An action taken in the `:catchup` window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatchUpAction {
+    /// Mark messages as read, after the undo delay passes.
+    Read(CatchUpScope),
+
+    /// Cancel the most recent read that hasn't been sent yet.
+    Undo,
+
+    /// Rebuild the window, dropping messages that have been read.
+    Refresh,
 }
 
 /// An action taken against a room's timeline.
@@ -709,6 +759,12 @@ pub enum KeysAction {
 /// See [the commands module][super::commands] for where these are usually created.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IambAction {
+    /// Bookmark the selected message, or remove its bookmark.
+    Bookmark(BookmarkAction),
+
+    /// Perform an action in the `:catchup` window.
+    CatchUp(CatchUpAction),
+
     /// Perform an action against the homeserver.
     Homeserver(HomeserverAction),
 
@@ -762,6 +818,18 @@ impl IambAction {
     }
 }
 
+impl From<BookmarkAction> for IambAction {
+    fn from(act: BookmarkAction) -> Self {
+        IambAction::Bookmark(act)
+    }
+}
+
+impl From<CatchUpAction> for IambAction {
+    fn from(act: CatchUpAction) -> Self {
+        IambAction::CatchUp(act)
+    }
+}
+
 impl From<HomeserverAction> for IambAction {
     fn from(act: HomeserverAction) -> Self {
         IambAction::Homeserver(act)
@@ -807,6 +875,8 @@ impl From<TimelineAction> for IambAction {
 impl ApplicationAction for IambAction {
     fn is_edit_sequence(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::Bookmark(..) => SequenceStatus::Break,
+            IambAction::CatchUp(..) => SequenceStatus::Break,
             IambAction::ChangeTheme(..) => SequenceStatus::Break,
             IambAction::ClearUnreads => SequenceStatus::Break,
             IambAction::Homeserver(..) => SequenceStatus::Break,
@@ -827,6 +897,8 @@ impl ApplicationAction for IambAction {
 
     fn is_last_action(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::Bookmark(..) => SequenceStatus::Atom,
+            IambAction::CatchUp(..) => SequenceStatus::Atom,
             IambAction::ChangeTheme(..) => SequenceStatus::Atom,
             IambAction::ClearUnreads => SequenceStatus::Atom,
             IambAction::Homeserver(..) => SequenceStatus::Atom,
@@ -847,6 +919,8 @@ impl ApplicationAction for IambAction {
 
     fn is_last_selection(&self, _: &EditContext) -> SequenceStatus {
         match self {
+            IambAction::Bookmark(..) => SequenceStatus::Ignore,
+            IambAction::CatchUp(..) => SequenceStatus::Ignore,
             IambAction::ChangeTheme(..) => SequenceStatus::Ignore,
             IambAction::ClearUnreads => SequenceStatus::Ignore,
             IambAction::Homeserver(..) => SequenceStatus::Ignore,
@@ -867,6 +941,8 @@ impl ApplicationAction for IambAction {
 
     fn is_switchable(&self, _: &EditContext) -> bool {
         match self {
+            IambAction::Bookmark(..) => false,
+            IambAction::CatchUp(..) => false,
             IambAction::ChangeTheme(..) => false,
             IambAction::ClearUnreads => false,
             IambAction::Homeserver(..) => false,
@@ -2403,6 +2479,8 @@ pub struct Need {
     pub members: bool,
     pub pinned: bool,
     pub messages: Option<Vec<MessageNeed>>,
+    /// Events to fetch outside of the scrollback, like for the `:bookmarks` window.
+    pub events: Vec<OwnedEventId>,
 }
 
 /// Things that need loading for different rooms.
@@ -2421,6 +2499,11 @@ impl RoomNeeds {
     /// Mark a room for needing to fetch its pinned events.
     pub fn need_pinned(&mut self, room_id: OwnedRoomId) {
         self.needs.entry(room_id).or_default().pinned = true;
+    }
+
+    /// Mark a room for needing to fetch specific events outside of its scrollback.
+    pub fn need_events(&mut self, room_id: OwnedRoomId, event_ids: Vec<OwnedEventId>) {
+        self.needs.entry(room_id).or_default().events.extend(event_ids);
     }
 
     /// Mark a room for needing to load messages.
@@ -2534,6 +2617,15 @@ pub struct ChatStore {
 
     /// Notifications that should be dismissed when the user opens the room.
     pub open_notifications: HashMap<OwnedRoomId, Vec<NotificationHandle>>,
+
+    /// Display name and avatar changes seen across rooms.
+    pub profile_changes: ProfileChanges,
+
+    /// Read receipts from the `:catchup` window that are waiting for their undo delay to pass.
+    pub pending_reads: PendingReads,
+
+    /// Bookmarked messages from every room.
+    pub bookmarks: Bookmarks,
 }
 
 impl ChatStore {
@@ -2564,9 +2656,31 @@ impl ChatStore {
             draw_error: None,
             focused: true,
             open_notifications: Default::default(),
+            profile_changes: Default::default(),
+            pending_reads: Default::default(),
+            bookmarks: Default::default(),
         };
 
         Ok(store)
+    }
+
+    /// Send the `:catchup` read receipts whose undo delay has passed.
+    pub fn flush_due_reads(&mut self) {
+        for read in self.pending_reads.take_due(Instant::now()) {
+            let user_id = self.settings.profile.user_id.clone();
+            let info = self.rooms.get_or_default(read.room_id.clone());
+
+            // Update the local receipt right away, so the read point doesn't move back while
+            // waiting for the homeserver to echo it.
+            info.set_receipt(ReceiptThread::Main, user_id, read.event_id.clone());
+            self.open_notifications.remove(&read.room_id);
+            self.worker.send_receipt(
+                read.room_id,
+                ReceiptThread::Main,
+                read.event_id,
+                &self.settings,
+            );
+        }
     }
 
     /// Clear the `EventCache` for all rooms.
@@ -2706,6 +2820,15 @@ pub enum IambId {
 
     /// The `:invites` window.
     InvitesList,
+
+    /// The `:nicks` window.
+    ProfileChangeList,
+
+    /// The `:catchup` window.
+    CatchUp,
+
+    /// The `:bookmarks` window.
+    BookmarkList,
 }
 
 impl Display for IambId {
@@ -2739,6 +2862,9 @@ impl Display for IambId {
             IambId::UnreadList => f.write_str("iamb://unreads"),
             IambId::MentionsList => f.write_str("iamb://mentions"),
             IambId::InvitesList => f.write_str("iamb://invites"),
+            IambId::ProfileChangeList => f.write_str("iamb://nicks"),
+            IambId::CatchUp => f.write_str("iamb://catchup"),
+            IambId::BookmarkList => f.write_str("iamb://bookmarks"),
         }
     }
 }
@@ -2916,6 +3042,27 @@ impl Visitor<'_> for IambIdVisitor {
 
                 Ok(IambId::InvitesList)
             },
+            Some("nicks") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://nicks takes no path"));
+                }
+
+                Ok(IambId::ProfileChangeList)
+            },
+            Some("catchup") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://catchup takes no path"));
+                }
+
+                Ok(IambId::CatchUp)
+            },
+            Some("bookmarks") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://bookmarks takes no path"));
+                }
+
+                Ok(IambId::BookmarkList)
+            },
             Some(s) => Err(E::custom(format!("{s:?} is not a valid window"))),
             None => Err(E::custom("Invalid iamb window URL")),
         }
@@ -2998,6 +3145,15 @@ pub enum IambBufferId {
 
     /// The `:invites` window.
     InvitesList,
+
+    /// The `:nicks` window.
+    ProfileChangeList,
+
+    /// The `:catchup` window.
+    CatchUp,
+
+    /// The `:bookmarks` window.
+    BookmarkList,
 }
 
 impl IambBufferId {
@@ -3018,6 +3174,9 @@ impl IambBufferId {
             IambBufferId::UnreadList => IambId::UnreadList,
             IambBufferId::MentionsList => IambId::MentionsList,
             IambBufferId::InvitesList => IambId::InvitesList,
+            IambBufferId::ProfileChangeList => IambId::ProfileChangeList,
+            IambBufferId::CatchUp => IambId::CatchUp,
+            IambBufferId::BookmarkList => IambId::BookmarkList,
         };
 
         Some(id)
@@ -3352,13 +3511,15 @@ pub mod tests {
 
         need_load.need_messages(room_id.clone());
         need_load.need_members(room_id.clone());
+        need_load.need_events(room_id.clone(), vec![MSG1_EVID.clone()]);
 
         assert_eq!(need_load.into_iter().collect::<Vec<(OwnedRoomId, Need)>>(), vec![(
             room_id,
             Need {
                 members: true,
                 messages: Some(Vec::new()),
-                pinned: false
+                pinned: false,
+                events: vec![MSG1_EVID.clone()],
             }
         )],);
     }

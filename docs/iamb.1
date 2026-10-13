@@ -75,6 +75,53 @@ Mark all rooms as read.
 View a list of rooms with mentions of the current user.
 .It Sy ":invites"
 View a list of rooms you are invited to.
+.It Sy ":bookmark [note]"
+Bookmark the selected message to come back to later, optionally with a note.
+Running it on a bookmarked message with a note replaces the note, and without one keeps it.
+.It Sy ":bookmark!"
+Remove the note from the selected message's bookmark.
+Bookmarks are stored in the room's account data, so they sync to other sessions running
+.Nm ,
+but other clients won't show them.
+Only the message's identifier and the note are stored there, since account data isn't encrypted.
+See
+.Sy bookmarks_room
+in
+.Xr iamb 5
+for also posting new bookmarks to a room.
+.It Sy ":unbookmark"
+Remove the bookmark from the selected message.
+.It Sy ":bookmarks"
+View bookmarked messages from every room, most recently saved first.
+Press
+.Sy Enter
+on one to jump to it.
+.It Sy ":catchup"
+View unread messages from every room, grouped by room, without marking them as read.
+Messages that get marked as read stay in the window, dimmed, until it's refreshed.
+Press
+.Sy Enter
+on a message to jump to it in its room.
+.It Sy ":catchup read"
+Mark the selected message, and the ones before it in the same room, as read.
+.It Sy ":catchup read room"
+Mark every message in the selected message's room as read.
+.It Sy ":catchup read above"
+Mark the selected message and every message above it, across rooms, as read.
+.It Sy ":catchup read all"
+Mark every message in the window as read.
+.It Sy ":catchup undo"
+Cancel the most recent
+.Sy ":catchup read"
+whose read receipts haven't been sent yet.
+See
+.Sy catchup_undo_delay
+in
+.Xr iamb 5 .
+.It Sy ":catchup refresh"
+Drop messages that have been read from the window, and pick up newly unread rooms in order.
+.It Sy ":nicks"
+View recent display name and avatar changes, with the same change across several rooms shown once.
 .It Sy ":theme [name]"
 Change the current theme.
 .It Sy ":welcome"

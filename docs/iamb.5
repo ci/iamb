@@ -136,12 +136,26 @@ These options are configured as an object under the
 key and can be overridden as described in
 .Sx PROFILES .
 .Bl -tag -width Ds
+.It Sy bookmarks_room
+A room ID or alias to post newly bookmarked messages to, along with a link back to them,
+so they're also visible from other clients such as on a phone.
+The message's text is only included if the room it's from isn't encrypted, or the bookmarks
+room is.
+This should usually be a private room with only yourself in it.
 .It Sy cache_policy
 Configure how downloaded files and image previews are cached internally.
 Specifying this object will replace the upstream defaults and possibly lead to unconstrained cache growth.
 Possible keys and their effect are documented at:
 .br
 .Lk https://docs.rs/matrix-sdk/latest/matrix_sdk/media/struct.MediaRetentionPolicy.html#fields
+.It Sy catchup_undo_delay
+How many seconds to wait before sending the read receipts from
+.Sy ":catchup read" ,
+during which
+.Sy ":catchup undo"
+can cancel them.
+Defaults to 5.
+Any receipts still waiting are sent when quitting.
 .It Sy date_format
 A strftime format string for the date separator between messages from different days.
 See
@@ -264,6 +278,20 @@ this command may also be passed
 and
 .Sy geo:
 URLs for relevant messages.
+.It Sy profile_change_display
+Defines where display name and avatar changes are shown.
+Possible values are:
+.Bl -tag -width Ds
+.It Sy show
+Show them in room timelines along with other state events.
+This is the default value.
+.It Sy hide
+Keep them out of room timelines.
+.El
+Either way, they're collected in the
+.Sy :nicks
+window, where the same change made across several rooms is shown once.
+Profile changes never count towards a room's unread messages.
 .It Sy proxy
 When this subsection is present, you can configure how requests are proxied to the homeserver.
 See

@@ -24,6 +24,7 @@ use std::process;
 use std::sync::atomic::AtomicUsize;
 
 use clap::{CommandFactory, Parser};
+use futures::future::join_all;
 use matrix_sdk::OwnedServerName;
 use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
@@ -31,6 +32,7 @@ use matrix_sdk::ruma::events::invite_permission_config::{
     InvitePermissionAction,
     InvitePermissionConfigEventContent,
 };
+use matrix_sdk::ruma::events::receipt::ReceiptType;
 use modalkit::actions::{Commandable, TabAction, TabContainer, TabCount, WindowContainer};
 use modalkit::crossterm;
 use modalkit::crossterm::cursor::SetCursorStyle;
@@ -57,9 +59,11 @@ use crate::config::{CursorShape, Iamb};
 use crate::prelude::*;
 use crate::util::{restore_tty, setup_tty};
 use crate::windows::IambWindow;
-use crate::worker::{ClientWorker, LoginStyle, create_room};
+use crate::worker::{ClientWorker, LoginStyle, create_room, send_single_receipt};
 
 mod base;
+mod bookmarks;
+mod catchup;
 mod commands;
 mod completions;
 mod config;
@@ -69,6 +73,7 @@ mod notifications;
 mod oauth;
 mod prelude;
 mod preview;
+mod profile_changes;
 mod util;
 mod verifications;
 mod windows;
@@ -297,6 +302,8 @@ impl Application {
         let focused = self.focused;
         let sstate = &mut self.screen;
         let term = &mut self.terminal;
+
+        store.application.flush_due_reads();
 
         if store.application.ring_bell {
             store.application.ring_bell = term.backend_mut().write_all(&[7]).is_err();
@@ -604,6 +611,26 @@ impl Application {
                 }
 
                 None
+            },
+
+            IambAction::Bookmark(act) => {
+                let window = self.screen.current_window_mut()?;
+                let (room_id, event_id) =
+                    window.selected_message(store).ok_or(IambError::NoSelectedMessage)?;
+
+                bookmarks::bookmark_command(act, room_id, event_id, store).await?
+            },
+            IambAction::CatchUp(CatchUpAction::Undo) => {
+                let msg = match store.application.pending_reads.undo() {
+                    0 => "Nothing to undo".to_string(),
+                    1 => "Cancelled marking 1 room as read".to_string(),
+                    n => format!("Cancelled marking {n} rooms as read"),
+                };
+
+                Some(msg.into())
+            },
+            IambAction::CatchUp(act) => {
+                self.screen.current_window_mut()?.catchup_command(act, store)?
             },
 
             IambAction::ToggleScrollbackFocus => {
@@ -957,6 +984,39 @@ impl Application {
         self.screen.push_message(err, self.theme.cmdbar.error);
     }
 
+    /// Send any `:catchup` read receipts still waiting for their undo delay, since the receipt
+    /// worker won't get a chance to once we exit.
+    async fn send_pending_reads(&mut self) {
+        let mut locked = self.store.lock().await;
+        let reads = locked.application.pending_reads.take_newest();
+        let client = locked.application.worker.client.clone();
+        let receipt_type = if locked.application.settings.tunables.read_receipt_send {
+            ReceiptType::Read
+        } else {
+            ReceiptType::ReadPrivate
+        };
+        drop(locked);
+
+        let sends = reads.into_iter().map(|read| {
+            let client = &client;
+            let receipt_type = receipt_type.clone();
+
+            async move {
+                let thread = ReceiptThread::Main;
+                send_single_receipt(client, &read.room_id, thread, receipt_type, read.event_id)
+                    .await
+            }
+        });
+
+        // Send them all at once, without holding up quitting for long on a bad connection.
+        if tokio::time::timeout(Duration::from_secs(5), join_all(sends))
+            .await
+            .is_err()
+        {
+            tracing::warn!("Timed out sending read receipts while exiting");
+        }
+    }
+
     pub async fn run(&mut self) -> Result<(), std::io::Error> {
         self.terminal.clear()?;
 
@@ -999,6 +1059,8 @@ impl Application {
                 }
             }
         }
+
+        self.send_pending_reads().await;
 
         if let Some(ref layout) = self.last_layout {
             let locked = self.store.lock().await;

@@ -1588,7 +1588,8 @@ mod tests {
             vec![(room_id.clone(), Need {
                 messages: Some(Vec::new()),
                 members: false,
-                pinned: false
+                pinned: false,
+                events: vec![],
             })]
         );
 

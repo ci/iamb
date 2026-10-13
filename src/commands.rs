@@ -8,6 +8,7 @@ use modalkit::commands::{CommandError, CommandResult, CommandStep};
 use modalkit::env::vim::command::{CommandContext, CommandDescription, OptionType};
 
 use crate::base::{
+    CatchUpScope,
     CreateRoomFlags,
     CreateRoomType,
     DownloadFlags,
@@ -15,6 +16,7 @@ use crate::base::{
     IambJoinRule,
     KeysAction,
     MemberUpdateAction,
+    NoteUpdate,
     ProgramCommand,
     ProgramCommands,
     RoomField,
@@ -514,6 +516,76 @@ fn iamb_mentions(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult 
     }
 
     let open = ctx.switch(OpenTarget::Application(IambId::MentionsList));
+    let step = CommandStep::Continue(open, ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_catchup(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    let args = desc.arg.strings()?;
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let act = match args.as_slice() {
+        [] => {
+            let open = ctx.switch(OpenTarget::Application(IambId::CatchUp));
+            return Ok(CommandStep::Continue(open, ctx.context.clone()));
+        },
+        ["read"] => CatchUpAction::Read(CatchUpScope::Selected),
+        ["read", "room"] => CatchUpAction::Read(CatchUpScope::Room),
+        ["read", "above"] => CatchUpAction::Read(CatchUpScope::Above),
+        ["read", "all"] => CatchUpAction::Read(CatchUpScope::All),
+        ["undo"] => CatchUpAction::Undo,
+        ["refresh"] => CatchUpAction::Refresh,
+        _ => return Result::Err(CommandError::InvalidArgument),
+    };
+
+    let step = CommandStep::Continue(IambAction::from(act).into(), ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_bookmark(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    let note = desc.arg.text.trim();
+    let note = match (note.is_empty(), desc.bang) {
+        (false, _) => NoteUpdate::Set(note.to_string()),
+        (true, false) => NoteUpdate::Keep,
+        (true, true) => NoteUpdate::Clear,
+    };
+
+    let act = IambAction::from(BookmarkAction::Save(note));
+    let step = CommandStep::Continue(act.into(), ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_unbookmark(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let act = IambAction::from(BookmarkAction::Remove);
+    let step = CommandStep::Continue(act.into(), ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_bookmarks(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let open = ctx.switch(OpenTarget::Application(IambId::BookmarkList));
+    let step = CommandStep::Continue(open, ctx.context.clone());
+
+    return Ok(step);
+}
+
+fn iamb_nicks(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let open = ctx.switch(OpenTarget::Application(IambId::ProfileChangeList));
     let step = CommandStep::Continue(open, ctx.context.clone());
 
     return Ok(step);
@@ -1286,6 +1358,31 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         name: "invites".into(),
         aliases: vec![],
         f: iamb_invites,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "nicks".into(),
+        aliases: vec![],
+        f: iamb_nicks,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "catchup".into(),
+        aliases: vec![],
+        f: iamb_catchup,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "bookmark".into(),
+        aliases: vec![],
+        f: iamb_bookmark,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "unbookmark".into(),
+        aliases: vec![],
+        f: iamb_unbookmark,
+    });
+    cmds.add_command(ProgramCommand {
+        name: "bookmarks".into(),
+        aliases: vec![],
+        f: iamb_bookmarks,
     });
     cmds.add_command(ProgramCommand { name: "self".into(), aliases: vec![], f: iamb_self });
     cmds.add_command(ProgramCommand {

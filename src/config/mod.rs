@@ -84,6 +84,7 @@ const DEFAULT_ROOM_LABELS: [RoomLabel; 5] = [
 const DEFAULT_ENABLE_TITLE: bool = true;
 const DEFAULT_REQ_TIMEOUT: u64 = 120;
 const DEFAULT_SYNC_FREQUENCY: u64 = 250;
+const DEFAULT_CATCHUP_UNDO_DELAY: u64 = 5;
 
 const DEFAULT_ENC_INDICATOR_LOC: EncryptionIndicatorLocation = EncryptionIndicatorLocation::PROMPT;
 const DEFAULT_ICON_ENC: Cow<'static, str> = Cow::Borrowed("[E] ");
@@ -494,6 +495,17 @@ where
         },
         (None, None) => None,
     }
+}
+
+/// Where to show users' display name and avatar changes.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileChangeDisplay {
+    /// Show them in room timelines, like other state events.
+    #[default]
+    Show,
+    /// Only show them in the `:nicks` window.
+    Hide,
 }
 
 #[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -963,6 +975,8 @@ pub struct TerminalValues {
 /// per-profile overrides on top of the global settings.
 #[derive(Clone)]
 pub struct TunableValues {
+    pub bookmarks_room: Option<OwnedRoomOrAliasId>,
+    pub catchup_undo_delay: u64,
     pub encryption: EncryptionValues,
     pub default_markup: MarkupFormat,
     pub ignorecase: bool,
@@ -971,6 +985,7 @@ pub struct TunableValues {
     pub message_formatted_display: bool,
     pub message_shortcode_display: bool,
     pub normal_after_send: bool,
+    pub profile_change_display: ProfileChangeDisplay,
     pub proxy: ProxyValues,
     pub reaction_display: bool,
     pub reaction_shortcode_display: bool,
@@ -1032,6 +1047,8 @@ pub struct Tunables {
     /// Subsection for overriding how specific Matrix users are rendered.
     pub users: Option<UserOverrides>,
 
+    pub bookmarks_room: Option<OwnedRoomOrAliasId>,
+    pub catchup_undo_delay: Option<u64>,
     pub default_markup: Option<MarkupFormat>,
     pub ignorecase: Option<bool>,
     pub log_level: Option<String>,
@@ -1039,6 +1056,7 @@ pub struct Tunables {
     pub message_formatted_display: Option<bool>,
     pub message_shortcode_display: Option<bool>,
     pub normal_after_send: Option<bool>,
+    pub profile_change_display: Option<ProfileChangeDisplay>,
     pub reaction_display: Option<bool>,
     pub reaction_shortcode_display: Option<bool>,
     pub read_receipt_send: Option<bool>,
@@ -1103,6 +1121,9 @@ impl Tunables {
                 .message_shortcode_display
                 .or(other.message_shortcode_display),
             normal_after_send: self.normal_after_send.or(other.normal_after_send),
+            catchup_undo_delay: self.catchup_undo_delay.or(other.catchup_undo_delay),
+            bookmarks_room: self.bookmarks_room.or(other.bookmarks_room),
+            profile_change_display: self.profile_change_display.or(other.profile_change_display),
             reaction_display: self.reaction_display.or(other.reaction_display),
             reaction_shortcode_display: self
                 .reaction_shortcode_display
@@ -1160,6 +1181,9 @@ impl Tunables {
             message_formatted_display: self.message_formatted_display.unwrap_or(true),
             message_shortcode_display: self.message_shortcode_display.unwrap_or(false),
             normal_after_send: self.normal_after_send.unwrap_or(false),
+            catchup_undo_delay: self.catchup_undo_delay.unwrap_or(DEFAULT_CATCHUP_UNDO_DELAY),
+            bookmarks_room: self.bookmarks_room,
+            profile_change_display: self.profile_change_display.unwrap_or_default(),
             reaction_display: self.reaction_display.unwrap_or(true),
             reaction_shortcode_display: self.reaction_shortcode_display.unwrap_or(false),
             read_receipt_send: self.read_receipt_send.unwrap_or(true),

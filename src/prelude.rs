@@ -75,6 +75,8 @@ pub use url::Url;
 pub use crate::base::{
     AccountField,
     AsyncProgramStore,
+    BookmarkAction,
+    CatchUpAction,
     ChatStore,
     IambAction,
     IambBufferId,

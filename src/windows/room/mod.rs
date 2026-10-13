@@ -960,6 +960,20 @@ impl RoomState {
         }
     }
 
+    /// The room and event identifier of the selected message.
+    pub fn selected_event(&self, store: &ProgramStore) -> Option<(OwnedRoomId, OwnedEventId)> {
+        match self {
+            RoomState::Chat(chat) => {
+                let info = store.application.rooms.get(chat.id())?;
+                Some((chat.id().to_owned(), chat.selected_event(info)?))
+            },
+            RoomState::Message(msg) => {
+                Some((msg.room_id().to_owned(), msg.id().as_origin()?.to_owned()))
+            },
+            RoomState::Space(_) | RoomState::NotJoined(_) => None,
+        }
+    }
+
     pub fn id(&mut self, store: &ProgramStore) -> Option<&RoomId> {
         match self {
             RoomState::Chat(chat) => Some(chat.id()),

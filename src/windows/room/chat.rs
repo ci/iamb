@@ -587,6 +587,11 @@ impl ChatState {
         &self.room_id
     }
 
+    /// The event identifier of the selected message, if it's been sent.
+    pub fn selected_event(&self, info: &RoomInfo) -> Option<OwnedEventId> {
+        self.scrollback.get(info)?.event.event_id().map(ToOwned::to_owned)
+    }
+
     pub fn current_message(&self, store: &mut ProgramStore) -> Option<MessageId> {
         let info = store.application.rooms.get_or_default(self.room_id.clone());
         self.scrollback.get_key(info).map(|key| key.id)

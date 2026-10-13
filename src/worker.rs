@@ -322,12 +322,19 @@ async fn run_plan(client: &Client, store: &AsyncProgramStore, plan: Plan) {
             members_insert(room_id, res, locked.deref_mut());
         },
         Plan::FullMembers(room_id) => {
-            let res = match client.get_room(&room_id) {
-                Some(room) => room.members(RoomMemberships::all()).await.map_err(IambError::from),
-                None => Err(IambError::UnknownRoom(room_id.clone())),
-            };
-            let mut locked = store.lock().await;
-            members_insert(room_id, res.map_err(Into::into), locked.deref_mut());
+            // Large rooms can have big member lists, so don't hold up the other loads for it.
+            let (client, store) = (client.clone(), store.clone());
+
+            tokio::spawn(async move {
+                let res = match client.get_room(&room_id) {
+                    Some(room) => {
+                        room.members(RoomMemberships::all()).await.map_err(IambError::from)
+                    },
+                    None => Err(IambError::UnknownRoom(room_id.clone())),
+                };
+                let mut locked = store.lock().await;
+                members_insert(room_id, res.map_err(Into::into), locked.deref_mut());
+            });
         },
         Plan::Pinned(room_id, event_ids) => {
             let msgs = pinned_load(client, &room_id, event_ids).await;
@@ -842,6 +849,7 @@ fn members_insert(
     if let Ok(members) = res {
         let ChatStore { rooms, .. } = &mut store.application;
         let info = rooms.get_or_default(room_id);
+        info.members_loaded = true;
 
         for member in members {
             let user_id = member.user_id().to_owned();

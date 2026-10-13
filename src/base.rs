@@ -1485,6 +1485,9 @@ pub struct RoomInfo {
 
     /// Messages in this room that are bookmarked, to mark them in the timeline.
     pub bookmarked: HashSet<OwnedEventId>,
+
+    /// Whether the members we know about have been loaded, to get their display names.
+    pub members_loaded: bool,
 }
 
 impl Default for RoomInfo {
@@ -1511,6 +1514,7 @@ impl Default for RoomInfo {
             pinned_previews: Default::default(),
             pinned_failures: Default::default(),
             bookmarked: Default::default(),
+            members_loaded: false,
             unloaded_edits: Default::default(),
             unloaded_polls: Default::default(),
             unloaded_unstable_polls: Default::default(),

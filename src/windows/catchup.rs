@@ -407,10 +407,12 @@ impl CatchUpFeed {
     }
 }
 
-/// Whether a message's sender has no display name we know of yet.
+/// Whether a message's sender still has no display name once the members we know about have
+/// been loaded, meaning the full member list is needed.
 pub fn unnamed_sender(info: &RoomInfo, event_id: &EventId) -> bool {
-    info.get_pinned(event_id)
-        .is_some_and(|msg| info.display_names.get(&msg.sender).is_none())
+    info.members_loaded &&
+        info.get_pinned(event_id)
+            .is_some_and(|msg| info.display_names.get(&msg.sender).is_none())
 }
 
 /// The single row standing in for a collapsed room, pointing at its newest message.
@@ -570,6 +572,11 @@ pub fn undo(store: &mut ProgramStore) -> InfoMessage {
 /// The `:catchup` action for Vim's editing keys, which have nothing to edit in the window: `x`
 /// marks read up to the cursor, `X` everything above it, `dd` the whole room, and `u` undoes.
 pub fn editor_action(act: &EditorAction, ctx: &ProgramContext) -> Option<CatchUpAction> {
+    // Changes like `s` and `cc`, and erasing in Insert mode, delete text too.
+    if ctx.get_insert_style().is_some() {
+        return None;
+    }
+
     let deletes = |op| matches!(ctx.resolve(op), EditAction::Delete(..));
 
     match act {
@@ -840,8 +847,9 @@ pub(crate) mod tests {
             }
             let mut info = vec![];
             while let Some((act, ctx)) = bindings.pop() {
+                // Editing keys that aren't intercepted fail, since lists are read-only.
                 if let Action::Editor(act) = act &&
-                    let Some(msg) = win.editor_command(&act, &ctx, store).unwrap()
+                    let Ok(Some(msg)) = win.editor_command(&act, &ctx, store)
                 {
                     info.push(msg.to_string());
                 }
@@ -869,12 +877,47 @@ pub(crate) mod tests {
             ("!b:example.com".into(), MSG5_EVID.clone()),
         ]);
 
+        // Changes and erasing in Insert mode delete too, but don't mark anything read.
+        for keys in [
+            vec!["s"],
+            vec!["<Esc>", "c", "c"],
+            vec!["<Esc>", "S"],
+            vec!["<Esc>", "i", "<BS>"],
+        ] {
+            press(&keys, &mut win, &mut store);
+            assert!(store.application.pending_reads.is_empty(), "{keys:?}");
+        }
+        press(&["<Esc>"], &mut win, &mut store);
+
         // Other keys still move around as usual.
         press(&["k"], &mut win, &mut store);
         let IambWindow::CatchUp(state, _) = &win else {
             unreachable!()
         };
         assert_eq!(selected_index(state), Some(3));
+    }
+
+    #[test]
+    fn test_unnamed_sender() {
+        let mut info = mock_room();
+        let msgs = info.get_thread(None).unwrap();
+        let unnamed = msgs
+            .values()
+            .filter(|msg| info.display_names.get(&msg.sender).is_none())
+            .find_map(|msg| msg.event.event_id().map(ToOwned::to_owned))
+            .unwrap();
+        let named = msgs
+            .values()
+            .filter(|msg| info.display_names.get(&msg.sender).is_some())
+            .find_map(|msg| msg.event.event_id().map(ToOwned::to_owned))
+            .unwrap();
+
+        // Until the members we know about have loaded, any sender might just not be loaded yet.
+        assert!(!unnamed_sender(&info, &unnamed));
+
+        info.members_loaded = true;
+        assert!(unnamed_sender(&info, &unnamed));
+        assert!(!unnamed_sender(&info, &named));
     }
 
     #[tokio::test]

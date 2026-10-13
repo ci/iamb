@@ -319,10 +319,9 @@ async fn run_plan(client: &Client, store: &AsyncProgramStore, plan: Plan) {
         Plan::Pinned(room_id, event_ids) => {
             let msgs = pinned_load(client, &room_id, event_ids).await;
             let mut locked = store.lock().await;
-            let info = locked.application.get_room_info(room_id);
 
             for (event_id, msg) in msgs {
-                info.insert_pinned(event_id, msg);
+                locked.application.insert_fetched_event(room_id.clone(), event_id, msg);
             }
         },
         Plan::RoomPreview(alias_id) => {

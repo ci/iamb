@@ -1895,7 +1895,10 @@ impl RoomInfo {
         let event_id = relation.event_id().to_owned();
         let poll_event_id = relation.poll_event_id().to_owned();
 
-        let loc = if let Some(msg) = self.get_event_mut(&poll_event_id) {
+        // Hold onto relations for polls that can't be decrypted yet, to apply once they are.
+        let loaded = self.get_event_mut(&poll_event_id).filter(|msg| !msg.event.is_encrypted());
+
+        let loc = if let Some(msg) = loaded {
             let MessageEvent::Poll(poll) = &mut msg.event else {
                 tracing::warn!("encountered poll replacement for non-poll message");
                 return;
@@ -1917,7 +1920,9 @@ impl RoomInfo {
         let event_id = relation.event_id().to_owned();
         let poll_event_id = relation.poll_event_id().to_owned();
 
-        let loc = if let Some(msg) = self.get_event_mut(&poll_event_id) {
+        let loaded = self.get_event_mut(&poll_event_id).filter(|msg| !msg.event.is_encrypted());
+
+        let loc = if let Some(msg) = loaded {
             let MessageEvent::UnstablePoll(poll) = &mut msg.event else {
                 tracing::warn!("encountered poll replacement for non-poll message");
                 return;
@@ -1949,6 +1954,13 @@ impl RoomInfo {
         };
         let msg_loc = self.keys.get(&replacement.event_id).cloned();
 
+        // Edits to messages that can't be decrypted yet are applied once they can be.
+        let msg_loc = msg_loc.filter(|_| {
+            !self
+                .get_event(&replacement.event_id)
+                .is_some_and(|msg| msg.event.is_encrypted())
+        });
+
         if let Some(EventLocation::Message(thread, key)) = msg_loc {
             // The edited message is already loaded in cache
             let Some(msg) = self.get_thread_mut(thread).get_mut(&key) else {
@@ -1969,6 +1981,24 @@ impl RoomInfo {
         let event_id = msg.event_id().to_owned();
 
         self.insert_msglike(event_id, None, msg.into());
+    }
+
+    /// The Megolm sessions of every loaded message that couldn't be decrypted.
+    pub fn undecrypted_sessions(&self) -> HashSet<String> {
+        std::iter::once(&self.messages)
+            .chain(self.threads.values())
+            .flat_map(|msgs| msgs.values())
+            .filter_map(|msg| {
+                let MessageEvent::EncryptedOriginal(ev) = &msg.event else {
+                    return None;
+                };
+                let EncryptedEventScheme::MegolmV1AesSha2(scheme) = &ev.content.scheme else {
+                    return None;
+                };
+
+                Some(scheme.session_id.clone())
+            })
+            .collect()
     }
 
     /// Undecryptable messages that were encrypted with any of the given Megolm sessions.
@@ -3461,6 +3491,47 @@ pub mod tests {
         assert!(info.get_event(&owned_event_id!("$c:example.com")).is_none());
         assert!(info.undecrypted_events(&sessions).is_empty());
         assert!(info.get_event(&MSG1_EVID).is_some());
+    }
+
+    fn message_event(event_id: &str, content: serde_json::Value) -> RoomMessageEvent {
+        serde_json::from_value(serde_json::json!({
+            "type": "m.room.message",
+            "event_id": event_id,
+            "room_id": TEST_ROOM1_ID.as_str(),
+            "sender": "@user2:example.com",
+            "origin_server_ts": 10,
+            "content": content,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn test_edit_of_undecrypted_message() {
+        let mut info = mock_room();
+        let event_id = owned_event_id!("$a:example.com");
+        info.insert_encrypted(encrypted_event(event_id.as_str(), "session1", None));
+        assert_eq!(info.undecrypted_sessions(), HashSet::from(["session1".to_string()]));
+
+        // An edit that arrives while the message can't be decrypted is kept for later.
+        info.insert_message(message_event(
+            "$edit:example.com",
+            serde_json::json!({
+                "msgtype": "m.text",
+                "body": "* edited",
+                "m.new_content": { "msgtype": "m.text", "body": "edited" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": event_id.as_str() },
+            }),
+        ));
+
+        assert!(info.remove_encrypted(&event_id));
+        info.insert_message(message_event(
+            event_id.as_str(),
+            serde_json::json!({ "msgtype": "m.text", "body": "original" }),
+        ));
+
+        let msg = info.get_event(&event_id).unwrap();
+        assert_eq!(msg.event.body(), "edited");
+        assert!(info.undecrypted_sessions().is_empty());
     }
 
     #[test]

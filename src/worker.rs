@@ -53,7 +53,10 @@ use matrix_sdk::ruma::events::poll::unstable_start::UnstablePollStartEventConten
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptEventContent, ReceiptType};
-use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
+use matrix_sdk::ruma::events::room::encrypted::{
+    EncryptedEventScheme,
+    OriginalSyncRoomEncryptedEvent,
+};
 use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
 use matrix_sdk::ruma::events::room::member::{MembershipState, OriginalSyncRoomMemberEvent};
 use matrix_sdk::ruma::events::room::name::RoomNameEventContent;
@@ -292,8 +295,15 @@ async fn run_plan(client: &Client, store: &AsyncProgramStore, plan: Plan) {
             };
 
             let res = load_older_one(&room).await;
+            let sessions = res
+                .as_ref()
+                .map(|(_, msgs)| undecrypted_sessions(msgs))
+                .unwrap_or_default();
             let mut locked = store.lock().await;
-            load_insert(room_id, res, locked.deref_mut(), message_need);
+            load_insert(room_id.clone(), res, locked.deref_mut(), message_need);
+            drop(locked);
+
+            redecrypt_room(client, store, &room_id, &sessions).await;
         },
         Plan::Members(room_id) => {
             let res = members_load(client, &room_id).await;
@@ -404,6 +414,10 @@ async fn redecrypt_room(
     room_id: &RoomId,
     sessions: &HashSet<String>,
 ) {
+    if sessions.is_empty() {
+        return;
+    }
+
     let Some(room) = client.get_room(room_id) else {
         return;
     };
@@ -456,25 +470,71 @@ async fn redecrypt_room(
 /// Swap in decrypted messages whenever new room keys arrive, whether from the key backup, a key
 /// import, or a late key share.
 async fn redecrypt_forever(client: &Client, store: &AsyncProgramStore) {
-    let Some(stream) = client.encryption().room_keys_received_stream().await else {
-        return;
-    };
-    let mut stream = std::pin::pin!(stream);
-
-    while let Some(update) = stream.next().await {
-        let Ok(keys) = update else {
+    loop {
+        // The stream is only available once encryption has been set up, and ends if it gets
+        // set up again, so keep (re)subscribing.
+        let Some(stream) = client.encryption().room_keys_received_stream().await else {
+            tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         };
+        let mut stream = std::pin::pin!(stream);
 
-        let mut rooms: HashMap<OwnedRoomId, HashSet<String>> = HashMap::new();
-        for key in keys {
-            rooms.entry(key.room_id).or_default().insert(key.session_id);
-        }
+        while let Some(update) = stream.next().await {
+            let Ok(keys) = update else {
+                tracing::warn!("missed some room key updates; retrying undecryptable messages");
+                redecrypt_all(client, store).await;
+                continue;
+            };
 
-        for (room_id, sessions) in rooms {
-            redecrypt_room(client, store, &room_id, &sessions).await;
+            let mut rooms: HashMap<OwnedRoomId, HashSet<String>> = HashMap::new();
+            for key in keys {
+                rooms.entry(key.room_id).or_default().insert(key.session_id);
+            }
+
+            for (room_id, sessions) in rooms {
+                redecrypt_room(client, store, &room_id, &sessions).await;
+            }
         }
     }
+}
+
+/// Retry decrypting every loaded message that couldn't be decrypted.
+async fn redecrypt_all(client: &Client, store: &AsyncProgramStore) {
+    let rooms = store
+        .lock()
+        .await
+        .application
+        .rooms
+        .iter()
+        .map(|(room_id, info)| (room_id.clone(), info.undecrypted_sessions()))
+        .filter(|(_, sessions)| !sessions.is_empty())
+        .collect::<Vec<_>>();
+
+    for (room_id, sessions) in rooms {
+        redecrypt_room(client, store, &room_id, &sessions).await;
+    }
+}
+
+/// The Megolm sessions of the undecryptable events in a batch of loaded events.
+///
+/// Keys for these may have arrived after the events were decrypted but before they were inserted,
+/// in which case the room key listener won't have found them yet.
+fn undecrypted_sessions(msgs: &[MessageAndReceipts]) -> HashSet<String> {
+    msgs.iter()
+        .filter_map(|(msg, _, _)| {
+            let AnyTimelineEvent::MessageLike(AnyMessageLikeEvent::RoomEncrypted(
+                MessageLikeEvent::Original(ev),
+            )) = msg
+            else {
+                return None;
+            };
+            let EncryptedEventScheme::MegolmV1AesSha2(scheme) = &ev.content.scheme else {
+                return None;
+            };
+
+            Some(scheme.session_id.clone())
+        })
+        .collect()
 }
 
 async fn get_receipts_for_timeline_events(
@@ -771,11 +831,15 @@ async fn load_initial_messages(client: Client, store: AsyncProgramStore) {
         }
 
         let msgs = get_receipts_for_timeline_events(room, events).await;
+        let sessions = undecrypted_sessions(&msgs);
 
         let mut locked = store.lock().await;
         let ChatStore { presences, rooms, previews, settings, .. } = &mut locked.application;
         let info = rooms.get_or_default(room.room_id().to_owned());
         insert_msgs_and_receipts(msgs, info, presences, previews, settings);
+        drop(locked);
+
+        redecrypt_room(&client, &store, room.room_id(), &sessions).await;
     }
 
     // This is an arbitrary limit on how much work we do in parallel to avoid
@@ -800,12 +864,17 @@ async fn load_initial_messages(client: Client, store: AsyncProgramStore) {
                     },
                 };
 
+                let sessions = undecrypted_sessions(&msgs);
+
                 let mut locked = store.lock().await;
                 let ChatStore { presences, rooms, previews, settings, .. } =
                     &mut locked.application;
                 let info = rooms.get_or_default(room.room_id().to_owned());
                 info.reached_timeline_start = reached_start;
                 insert_msgs_and_receipts(msgs, info, presences, previews, settings);
+                drop(locked);
+
+                redecrypt_room(&client, &store, room.room_id(), &sessions).await;
                 drop(permit);
             }
         })

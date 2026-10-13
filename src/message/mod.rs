@@ -565,6 +565,11 @@ impl MessageEvent {
         }
     }
 
+    /// Whether this is a message that hasn't been decrypted (yet).
+    pub fn is_encrypted(&self) -> bool {
+        matches!(self, Self::EncryptedOriginal(_))
+    }
+
     fn is_edited(&self) -> bool {
         match self {
             Self::Original(_, edits) => !edits.is_empty(),

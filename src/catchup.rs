@@ -2,6 +2,10 @@
 //!
 //! Messages shown in the `:catchup` window only get marked as read when asked to, and those
 //! read receipts are held back for a short while so that they can still be undone.
+use std::collections::{BTreeSet, HashSet};
+
+use serde::{Deserialize, Serialize};
+
 use crate::prelude::*;
 
 /// A read receipt that hasn't been sent yet.
@@ -182,6 +186,45 @@ pub fn unread_messages(
     }
 }
 
+/// What's saved between sessions about the `:catchup` window.
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct SavedFolds {
+    #[serde(default)]
+    collapsed: BTreeSet<OwnedRoomId>,
+}
+
+pub fn load_folds(path: &Path) -> HashSet<OwnedRoomId> {
+    let saved = match std::fs::read_to_string(path) {
+        Ok(saved) => saved,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashSet::new(),
+        Err(e) => {
+            tracing::warn!(?path, "failed to read collapsed :catchup rooms: {e}");
+            return HashSet::new();
+        },
+    };
+
+    match serde_json::from_str::<SavedFolds>(&saved) {
+        Ok(saved) => saved.collapsed.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(?path, "failed to parse collapsed :catchup rooms: {e}");
+            HashSet::new()
+        },
+    }
+}
+
+pub fn save_folds(path: &Path, collapsed: &HashSet<OwnedRoomId>) {
+    let saved = SavedFolds { collapsed: collapsed.iter().cloned().collect() };
+    let res = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .transpose()
+        .and_then(|_| std::fs::write(path, serde_json::to_string(&saved)?));
+
+    if let Err(e) = res {
+        tracing::warn!(?path, "failed to save collapsed :catchup rooms: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +369,29 @@ mod tests {
             ReadPoint::new(&info, Some(unloaded), None, user_id),
             ReadPoint::Loaded(key2.clone())
         );
+    }
+
+    #[test]
+    fn test_saved_folds() {
+        let dir = std::env::temp_dir().join(format!("iamb-catchup-test-{}", std::process::id()));
+        let path = dir.join("nested").join("catchup.json");
+        let a = OwnedRoomId::try_from("!a:example.com").unwrap();
+        let b = OwnedRoomId::try_from("!b:example.com").unwrap();
+
+        // Nothing saved yet.
+        assert!(load_folds(&path).is_empty());
+
+        let collapsed = HashSet::from([a.clone(), b.clone()]);
+        save_folds(&path, &collapsed);
+        assert_eq!(load_folds(&path), collapsed);
+
+        save_folds(&path, &HashSet::from([a.clone()]));
+        assert_eq!(load_folds(&path), HashSet::from([a]));
+
+        // A broken file is ignored rather than failing.
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_folds(&path).is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

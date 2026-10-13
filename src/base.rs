@@ -2593,11 +2593,15 @@ pub struct ChatStore {
 
     /// Read receipts from the `:catchup` window that are waiting for their undo delay to pass.
     pub pending_reads: PendingReads,
+
+    /// Rooms collapsed in the `:catchup` window, shared between its windows and saved to disk.
+    pub catchup_collapsed: HashSet<OwnedRoomId>,
 }
 
 impl ChatStore {
     /// Create a new [ChatStore].
     pub fn new(worker: Requester, settings: ApplicationSettings) -> IambResult<Self> {
+        let catchup_collapsed = crate::catchup::load_folds(&settings.catchup_json);
         let previews = PreviewManager::new(&settings);
         let cmds = crate::commands::setup_commands(&settings.aliases)?;
 
@@ -2625,6 +2629,7 @@ impl ChatStore {
             open_notifications: Default::default(),
             profile_changes: Default::default(),
             pending_reads: Default::default(),
+            catchup_collapsed,
         };
 
         Ok(store)

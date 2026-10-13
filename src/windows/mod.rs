@@ -1177,7 +1177,7 @@ impl WindowOps<IambInfo> for IambWindow {
             IambWindow::MentionsList(w) => Self::MentionsList(w.dup(store)),
             IambWindow::InvitesList(w) => Self::InvitesList(w.dup(store)),
             IambWindow::ProfileChangeList(w) => Self::ProfileChangeList(w.dup(store)),
-            IambWindow::CatchUp(w, feed) => Self::CatchUp(w.dup(store), feed.dup()),
+            IambWindow::CatchUp(w, _) => Self::CatchUp(w.dup(store), CatchUpFeed::default()),
         }
     }
 
@@ -1418,7 +1418,7 @@ impl Window<IambInfo> for IambWindow {
             IambId::CatchUp => {
                 let list = CatchUpListState::new(IambBufferId::CatchUp, vec![]);
 
-                Ok(Self::CatchUp(list, CatchUpFeed::new(&store.application.settings)))
+                Ok(Self::CatchUp(list, CatchUpFeed::default()))
             },
         }
     }

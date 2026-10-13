@@ -13,6 +13,8 @@ pub struct Whois {
     pub presence: Option<PresenceState>,
     /// `None` when the user hasn't set up cross-signing, or we couldn't check.
     pub verified: Option<bool>,
+    /// How many rooms we can't tell whether the user is in, since their members aren't loaded.
+    pub unknown_rooms: usize,
     pub dm: Option<String>,
     /// Shared rooms, along with the user's display name in each when it differs from their
     /// global one.
@@ -38,7 +40,7 @@ impl Whois {
             match self.verified {
                 Some(true) => "Identity: verified",
                 Some(false) => "Identity: not verified",
-                None => "Identity: unknown (no cross-signing keys)",
+                None => "Identity: unknown (no cross-signing keys found)",
             }
             .into(),
         );
@@ -49,6 +51,12 @@ impl Whois {
         });
 
         lines.push(format!("Shared rooms ({}):", self.rooms.len()));
+        if self.unknown_rooms > 0 {
+            lines.push(format!(
+                "  (and maybe some of {} rooms whose members haven't been loaded; open :members there)",
+                self.unknown_rooms
+            ));
+        }
         for (room, name) in &self.rooms {
             match name {
                 Some(name) => lines.push(format!("  {room} (as {name:?})")),
@@ -76,16 +84,21 @@ pub async fn whois(user_id: OwnedUserId, store: &mut ProgramStore) -> IambResult
     let display_name = field("displayname");
     let avatar_url = field("avatar_url");
 
-    let verified = match client.encryption().get_user_identity(&user_id).await {
-        Ok(Some(identity)) => Some(identity.is_verified()),
-        Ok(None) | Err(_) => None,
+    // Ask the homeserver if we don't have their keys, which happens when we share no encrypted
+    // rooms with them.
+    let encryption = client.encryption();
+    let identity = match encryption.get_user_identity(&user_id).await {
+        Ok(Some(identity)) => Some(identity),
+        Ok(None) | Err(_) => encryption.request_user_identity(&user_id).await.ok().flatten(),
     };
+    let verified = identity.map(|identity| identity.is_verified());
 
     let dm = client
         .get_dm_room(&user_id)
         .map(|room| store.application.get_room_title(room.room_id()));
 
     let mut rooms = vec![];
+    let mut unknown_rooms = 0;
     let joined = store
         .application
         .sync_info
@@ -93,7 +106,11 @@ pub async fn whois(user_id: OwnedUserId, store: &mut ProgramStore) -> IambResult
         .iter()
         .chain(store.application.sync_info.dms.iter());
     for room in joined {
+        // Members are lazily loaded, so only rooms whose full list we have can rule them out.
         let Ok(Some(member)) = room.get_member_no_sync(&user_id).await else {
+            if !room.are_members_synced() {
+                unknown_rooms += 1;
+            }
             continue;
         };
 
@@ -117,6 +134,7 @@ pub async fn whois(user_id: OwnedUserId, store: &mut ProgramStore) -> IambResult
         verified,
         dm,
         rooms,
+        unknown_rooms,
     };
 
     Ok(Some(InfoMessage::Pager(whois.show())))
@@ -140,6 +158,7 @@ mod tests {
                 ("Work".into(), Some("Alice (OOO)".into())),
             ],
             avatar_url: None,
+            unknown_rooms: 0,
         };
 
         assert_eq!(
@@ -161,13 +180,15 @@ mod tests {
             verified: None,
             dm: None,
             rooms: vec![],
+            unknown_rooms: 3,
         };
         assert_eq!(
             whois.show(),
             "@bob:example.com\n\
-             Identity: unknown (no cross-signing keys)\n\
+             Identity: unknown (no cross-signing keys found)\n\
              Direct message: none\n\
-             Shared rooms (0):"
+             Shared rooms (0):\n  \
+             (and maybe some of 3 rooms whose members haven't been loaded; open :members there)"
         );
     }
 }

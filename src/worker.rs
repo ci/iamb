@@ -444,15 +444,24 @@ async fn redecrypt_room(
         };
 
         let mut locked = store.lock().await;
-        let ChatStore { presences, rooms, previews, settings, .. } = &mut locked.application;
+        let ChatStore {
+            presences,
+            rooms,
+            previews,
+            profile_changes,
+            settings,
+            ..
+        } = &mut locked.application;
         let info = rooms.get_or_default(room_id.to_owned());
 
         if info.remove_encrypted(&event_id) {
             insert_msgs_and_receipts(
                 vec![(msg, thread, vec![])],
+                room_id,
                 info,
                 presences,
                 previews,
+                profile_changes,
                 settings,
             );
         }

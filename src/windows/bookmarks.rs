@@ -69,7 +69,8 @@ impl ListItem<IambInfo> for BookmarkItem {
 
         match (info, msg) {
             (Some(info), Some(msg)) => {
-                let previews = &store.application.previews;
+                // Lists can't draw images, so show attachments as text.
+                let previews = PreviewManager::text_only();
                 let width = vwctx.get_width();
                 text.extend(msg.show(None, selected, width, info, settings, previews));
             },

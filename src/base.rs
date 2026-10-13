@@ -180,6 +180,9 @@ pub enum MessageAction {
     /// The [bool] argument indicates whether to skip confirmation for clearing the message bar.
     Cancel(bool),
 
+    /// Copy one of the message's links to the clipboard.
+    CopyLink,
+
     /// Download an attachment to the given path.
     ///
     /// The second argument controls whether to overwrite any already existing file at the
@@ -795,6 +798,9 @@ pub enum IambAction {
     /// Open a URL.
     OpenLink(String),
 
+    /// Copy some text to the clipboard.
+    Copy(String),
+
     /// Perform an action on the currently focused room.
     Room(RoomAction),
 
@@ -901,6 +907,7 @@ impl ApplicationAction for IambAction {
             IambAction::Space(..) => SequenceStatus::Break,
             IambAction::Room(..) => SequenceStatus::Break,
             IambAction::OpenLink(..) => SequenceStatus::Break,
+            IambAction::Copy(..) => SequenceStatus::Break,
             IambAction::Send(..) => SequenceStatus::Break,
             IambAction::Timeline(..) => SequenceStatus::Break,
             IambAction::ToggleScrollbackFocus => SequenceStatus::Break,
@@ -923,6 +930,7 @@ impl ApplicationAction for IambAction {
             IambAction::Message(..) => SequenceStatus::Atom,
             IambAction::Space(..) => SequenceStatus::Atom,
             IambAction::OpenLink(..) => SequenceStatus::Atom,
+            IambAction::Copy(..) => SequenceStatus::Atom,
             IambAction::Room(..) => SequenceStatus::Atom,
             IambAction::Send(..) => SequenceStatus::Atom,
             IambAction::Timeline(..) => SequenceStatus::Atom,
@@ -947,6 +955,7 @@ impl ApplicationAction for IambAction {
             IambAction::Space(..) => SequenceStatus::Ignore,
             IambAction::Room(..) => SequenceStatus::Ignore,
             IambAction::OpenLink(..) => SequenceStatus::Ignore,
+            IambAction::Copy(..) => SequenceStatus::Ignore,
             IambAction::Send(..) => SequenceStatus::Ignore,
             IambAction::Timeline(..) => SequenceStatus::Ignore,
             IambAction::ToggleScrollbackFocus => SequenceStatus::Ignore,
@@ -971,6 +980,7 @@ impl ApplicationAction for IambAction {
             IambAction::Keys(..) => false,
             IambAction::Send(..) => false,
             IambAction::OpenLink(..) => false,
+            IambAction::Copy(..) => false,
             IambAction::Timeline(..) => false,
             IambAction::ToggleScrollbackFocus => false,
             IambAction::Verify(..) => false,
@@ -1475,6 +1485,9 @@ pub struct RoomInfo {
 
     /// Messages in this room that are bookmarked, to mark them in the timeline.
     pub bookmarked: HashSet<OwnedEventId>,
+
+    /// Whether the members we know about have been loaded, to get their display names.
+    pub members_loaded: bool,
 }
 
 impl Default for RoomInfo {
@@ -1501,6 +1514,7 @@ impl Default for RoomInfo {
             pinned_previews: Default::default(),
             pinned_failures: Default::default(),
             bookmarked: Default::default(),
+            members_loaded: false,
             unloaded_edits: Default::default(),
             unloaded_polls: Default::default(),
             unloaded_unstable_polls: Default::default(),
@@ -1660,6 +1674,15 @@ impl RoomInfo {
     }
 
     /// Get an event for an identifier as mutable.
+    /// Get a mutable message, from the scrollback if it's loaded or else from fetched previews.
+    pub fn get_pinned_mut(&mut self, event_id: &EventId) -> Option<&mut Message> {
+        if self.keys.contains_key(event_id) {
+            self.get_event_mut(event_id)
+        } else {
+            self.pinned_previews.get_mut(event_id)
+        }
+    }
+
     pub fn get_event_mut(&mut self, event_id: &EventId) -> Option<&mut Message> {
         let loc = self.keys.get(event_id)?.clone();
 
@@ -2587,6 +2610,8 @@ pub struct Need {
 pub struct RoomNeeds {
     needs: HashMap<OwnedRoomId, Need>,
     previews: HashSet<OwnedRoomOrAliasId>,
+    /// Rooms to fetch the full member list of, rather than just the members we know about.
+    full_members: HashSet<OwnedRoomId>,
 }
 
 impl RoomNeeds {
@@ -2635,6 +2660,16 @@ impl RoomNeeds {
     /// Return all requested room previews
     pub fn preview_needs(&mut self) -> impl Iterator<Item = OwnedRoomOrAliasId> {
         std::mem::take(&mut self.previews).into_iter()
+    }
+
+    /// Mark a room for needing its full member list fetched from the homeserver.
+    pub fn need_full_members(&mut self, room_id: OwnedRoomId) {
+        self.full_members.insert(room_id);
+    }
+
+    /// Return all rooms whose full member lists were requested.
+    pub fn full_members_needs(&mut self) -> impl Iterator<Item = OwnedRoomId> {
+        std::mem::take(&mut self.full_members).into_iter()
     }
 
     pub fn rooms(&self) -> usize {
@@ -2729,6 +2764,9 @@ pub struct ChatStore {
     /// Rooms whose members we've asked to load, to show display names.
     members_requested: HashSet<OwnedRoomId>,
 
+    /// Rooms whose full member list we've asked for, to show display names of older senders.
+    full_members_requested: HashSet<OwnedRoomId>,
+
     /// Rooms collapsed in the `:catchup` window, shared between its windows and saved to disk.
     pub catchup_collapsed: HashSet<OwnedRoomId>,
 }
@@ -2766,6 +2804,7 @@ impl ChatStore {
             pending_reads: Default::default(),
             bookmarks: Default::default(),
             members_requested: Default::default(),
+            full_members_requested: Default::default(),
             catchup_collapsed,
         };
 
@@ -2788,6 +2827,15 @@ impl ChatStore {
         }
 
         self.rooms.get_or_default(room_id).insert_pinned(event_id, msg);
+    }
+
+    /// Fetch a room's full member list, unless that's already been asked for.
+    ///
+    /// Members are lazily loaded, so the senders of older messages often aren't known.
+    pub fn need_full_members_once(&mut self, room_id: &RoomId) {
+        if self.full_members_requested.insert(room_id.to_owned()) {
+            self.need_load.need_full_members(room_id.to_owned());
+        }
     }
 
     /// Load a room's members to show their display names, unless that's already been asked for.
@@ -3783,6 +3831,22 @@ pub mod tests {
         let info = store.application.rooms.get(&*TEST_ROOM1_ID).unwrap();
         assert!(info.get_pinned(&event_id).is_some());
         assert!(store.application.previews.get(&source, PreviewKind::Message).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_need_full_members_once() {
+        let mut store = mock_store().await;
+        let room_id = TEST_ROOM1_ID.clone();
+
+        store.application.need_full_members_once(&room_id);
+        store.application.need_full_members_once(&room_id);
+
+        let needs = store.application.need_load.full_members_needs().collect::<Vec<_>>();
+        assert_eq!(needs, vec![room_id.clone()]);
+
+        // It's only ever asked for once, even after the request has been taken.
+        store.application.need_full_members_once(&room_id);
+        assert_eq!(store.application.need_load.full_members_needs().count(), 0);
     }
 
     #[test]

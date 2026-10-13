@@ -4,7 +4,7 @@
 //! the cursor doesn't jump around while reading through them.
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use modalkit::actions::{EditAction, EditorActions};
+use modalkit::actions::{EditAction, EditorActions, HistoryAction};
 use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
 
 use crate::base::CatchUpScope;
@@ -312,6 +312,8 @@ impl CatchUpFeed {
             store.need_members_once(room_id);
         }
 
+        let mut unnamed = vec![];
+
         let ChatStore {
             rooms,
             worker,
@@ -355,6 +357,10 @@ impl CatchUpFeed {
             let seen = self.seen.entry(room_id.clone()).or_default();
             seen.extend(unread);
 
+            if seen.values().any(|event_id| unnamed_sender(info, event_id)) {
+                unnamed.push(room_id.clone());
+            }
+
             let title = info.name.clone().unwrap_or_else(|| "Untitled Matrix Room".into());
             let unread = seen.keys().filter(|key| !read.has_read(key)).count();
             let section = CatchUpSection { room_id: room_id.clone(), title, unread };
@@ -388,6 +394,10 @@ impl CatchUpFeed {
             }
         }
 
+        for room_id in unnamed {
+            store.need_full_members_once(&room_id);
+        }
+
         items
     }
 
@@ -395,6 +405,14 @@ impl CatchUpFeed {
     pub fn unread(state: &CatchUpListState) -> usize {
         state.get_items().iter().map(|item| item.unread).sum()
     }
+}
+
+/// Whether a message's sender still has no display name once the members we know about have
+/// been loaded, meaning the full member list is needed.
+pub fn unnamed_sender(info: &RoomInfo, event_id: &EventId) -> bool {
+    info.members_loaded &&
+        info.get_pinned(event_id)
+            .is_some_and(|msg| info.display_names.get(&msg.sender).is_none())
 }
 
 /// The single row standing in for a collapsed room, pointing at its newest message.
@@ -537,6 +555,42 @@ pub fn update(state: &mut CatchUpListState, feed: &mut CatchUpFeed, store: &mut 
         selected_index(state) != Some(idx)
     {
         select(state, idx, store);
+    }
+}
+
+/// Cancel the most recent read that hasn't been sent yet.
+pub fn undo(store: &mut ProgramStore) -> InfoMessage {
+    let msg = match store.application.pending_reads.undo() {
+        0 => "Nothing to undo".to_string(),
+        1 => "Cancelled marking 1 room as read".to_string(),
+        n => format!("Cancelled marking {n} rooms as read"),
+    };
+
+    msg.into()
+}
+
+/// The `:catchup` action for Vim's editing keys, which have nothing to edit in the window: `x`
+/// marks read up to the cursor, `X` everything above it, `dd` the whole room, and `u` undoes.
+pub fn editor_action(act: &EditorAction, ctx: &ProgramContext) -> Option<CatchUpAction> {
+    // Changes like `s` and `cc`, and erasing in Insert mode, delete text too.
+    if ctx.get_insert_style().is_some() {
+        return None;
+    }
+
+    let deletes = |op| matches!(ctx.resolve(op), EditAction::Delete(..));
+
+    match act {
+        EditorAction::Edit(op, EditTarget::Motion(MoveType::Column(dir, _), _)) if deletes(op) => {
+            match dir {
+                MoveDir1D::Next => Some(CatchUpAction::Read(CatchUpScope::Selected)),
+                MoveDir1D::Previous => Some(CatchUpAction::Read(CatchUpScope::Above)),
+            }
+        },
+        EditorAction::Edit(op, EditTarget::Range(RangeType::Line, _, _)) if deletes(op) => {
+            Some(CatchUpAction::Read(CatchUpScope::Room))
+        },
+        EditorAction::History(HistoryAction::Undo(_)) => Some(CatchUpAction::Undo),
+        _ => None,
     }
 }
 
@@ -775,6 +829,115 @@ pub(crate) mod tests {
         let read = vec![item("!b:example.com", &MSG2_EVID, 2, true)];
         assert_eq!(fold_cursor(&read, b), Some(0));
         assert_eq!(fold_cursor(&read, room_id!("!c:example.com")), None);
+    }
+
+    #[tokio::test]
+    async fn test_editing_keys_mark_read() {
+        use crate::keybindings::setup_keybindings;
+        use crate::windows::IambWindow;
+        use modalkit::keybindings::BindingMachine;
+
+        let mut store = mock_store().await;
+        let mut win = IambWindow::CatchUp(mock_state(false), CatchUpFeed::default());
+        let mut bindings = setup_keybindings(&store.application.settings.tunables);
+
+        let mut press = |keys: &[&str], win: &mut IambWindow, store: &mut ProgramStore| {
+            for key in keys {
+                bindings.input_key(key.parse().unwrap());
+            }
+            let mut info = vec![];
+            while let Some((act, ctx)) = bindings.pop() {
+                // Editing keys that aren't intercepted fail, since lists are read-only.
+                if let Action::Editor(act) = act &&
+                    let Ok(Some(msg)) = win.editor_command(&act, &ctx, store)
+                {
+                    info.push(msg.to_string());
+                }
+            }
+            info
+        };
+
+        // `x` marks up to the cursor in its room, and moves on.
+        let info = press(&["x"], &mut win, &mut store);
+        assert!(info[0].starts_with("Marking 1 message as read"), "{info:?}");
+        assert_eq!(store.application.pending_reads.len(), 1);
+
+        // `u` undoes it.
+        let info = press(&["u"], &mut win, &mut store);
+        assert_eq!(info, vec!["Cancelled marking 1 room as read"]);
+        assert!(store.application.pending_reads.is_empty());
+
+        // `dd` marks the whole room, and `X` everything above, across rooms.
+        press(&["d", "d"], &mut win, &mut store);
+        assert_eq!(pending(&mut store), vec![("!a:example.com".into(), MSG3_EVID.clone())]);
+        // The window isn't redrawn here, so the first room still looks unread.
+        press(&["j", "X"], &mut win, &mut store);
+        assert_eq!(pending(&mut store), vec![
+            ("!a:example.com".into(), MSG3_EVID.clone()),
+            ("!b:example.com".into(), MSG5_EVID.clone()),
+        ]);
+
+        // Changes and erasing in Insert mode delete too, but don't mark anything read.
+        for keys in [
+            vec!["s"],
+            vec!["<Esc>", "c", "c"],
+            vec!["<Esc>", "S"],
+            vec!["<Esc>", "i", "<BS>"],
+        ] {
+            press(&keys, &mut win, &mut store);
+            assert!(store.application.pending_reads.is_empty(), "{keys:?}");
+        }
+        press(&["<Esc>"], &mut win, &mut store);
+
+        // Other keys still move around as usual.
+        press(&["k"], &mut win, &mut store);
+        let IambWindow::CatchUp(state, _) = &win else {
+            unreachable!()
+        };
+        assert_eq!(selected_index(state), Some(3));
+    }
+
+    #[test]
+    fn test_unnamed_sender() {
+        let mut info = mock_room();
+        let msgs = info.get_thread(None).unwrap();
+        let unnamed = msgs
+            .values()
+            .filter(|msg| info.display_names.get(&msg.sender).is_none())
+            .find_map(|msg| msg.event.event_id().map(ToOwned::to_owned))
+            .unwrap();
+        let named = msgs
+            .values()
+            .filter(|msg| info.display_names.get(&msg.sender).is_some())
+            .find_map(|msg| msg.event.event_id().map(ToOwned::to_owned))
+            .unwrap();
+
+        // Until the members we know about have loaded, any sender might just not be loaded yet.
+        assert!(!unnamed_sender(&info, &unnamed));
+
+        info.members_loaded = true;
+        assert!(unnamed_sender(&info, &unnamed));
+        assert!(!unnamed_sender(&info, &named));
+    }
+
+    #[tokio::test]
+    async fn test_message_actions_in_list() {
+        use crate::windows::IambWindow;
+
+        let mut store = mock_store().await;
+        let room = TEST_ROOM1_ID.as_str();
+        let state =
+            CatchUpListState::new(IambBufferId::CatchUp, vec![item(room, &MSG1_EVID, 1, false)]);
+        let mut win = IambWindow::CatchUp(state, CatchUpFeed::default());
+        let ctx = ProgramContext::default();
+
+        // Actions reach the selected message, which has no links or attachment.
+        let res = win.message_command(MessageAction::CopyLink, ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::Application(IambError::NoAttachment))));
+
+        // Others need the room.
+        let res = win.message_command(MessageAction::Reply, ctx, &mut store).await;
+        assert!(matches!(res, Err(UIError::Failure(_))));
     }
 
     #[tokio::test]

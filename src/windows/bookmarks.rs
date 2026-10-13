@@ -3,6 +3,7 @@ use modalkit_ratatui::list::{ListCursor, ListItem, ListState};
 
 use crate::bookmarks::BookmarkEntry;
 use crate::prelude::*;
+use crate::windows::catchup::unnamed_sender;
 use crate::windows::list_previews::{self, PreviewItem};
 
 pub type BookmarkListState = ListState<BookmarkItem, IambInfo>;
@@ -164,8 +165,17 @@ pub fn fetch_missing(store: &mut ChatStore, items: &[BookmarkItem]) {
         store.need_load.need_events(room_id, event_ids);
     }
 
-    // Load display names for the rooms, in case they haven't been opened yet.
+    // Load display names for the rooms, in case they haven't been opened yet, and fetch the
+    // full member list if a sender still isn't known.
     for item in items {
         store.need_members_once(item.room_id());
+
+        let unnamed = store
+            .rooms
+            .get(item.room_id())
+            .is_some_and(|info| unnamed_sender(info, item.event_id()));
+        if unnamed {
+            store.need_full_members_once(item.room_id());
+        }
     }
 }

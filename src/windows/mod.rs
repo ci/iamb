@@ -651,9 +651,44 @@ impl IambWindow {
         store: &mut ProgramStore,
     ) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
         if let IambWindow::Room(w) = self {
-            w.message_command(act, ctx, store).await
-        } else {
+            return w.message_command(act, ctx, store).await;
+        }
+
+        // Lists of messages can open and download them, but other actions need the room.
+        let Some((room_id, event_id)) = self.selected_message(store) else {
             return Err(IambError::NoSelectedRoom.into());
+        };
+
+        match act {
+            MessageAction::Download(filename, flags) => {
+                let ChatStore { rooms, worker, settings, .. } = &mut store.application;
+                let info = rooms.get_or_default(room_id);
+                let msg = info.get_pinned_mut(&event_id).ok_or(IambError::NoSelectedMessage)?;
+                let tunables = &settings.tunables;
+
+                room::chat::msg_download(
+                    ctx,
+                    &worker.client,
+                    msg,
+                    settings,
+                    filename,
+                    flags,
+                    tunables,
+                )
+                .await
+            },
+            MessageAction::CopyLink => {
+                let info = store.application.rooms.get(&room_id);
+                let msg = info
+                    .and_then(|info| info.get_pinned(&event_id))
+                    .ok_or(IambError::NoSelectedMessage)?;
+
+                room::chat::msg_copy_link(msg, ctx)
+            },
+            _ => {
+                let msg = "Open the message in its room to do that (Enter)";
+                Err(UIError::Failure(msg.into()))
+            },
         }
     }
 
@@ -770,6 +805,19 @@ impl Editable<ProgramContext, ProgramStore, IambInfo> for IambWindow {
         ctx: &ProgramContext,
         store: &mut ProgramStore,
     ) -> EditResult<EditInfo, IambInfo> {
+        // Vim's editing keys mark messages as read in :catchup, since there's nothing to edit.
+        if let IambWindow::CatchUp(state, _) = self &&
+            let Some(act) = catchup::editor_action(act, ctx)
+        {
+            let res = match act {
+                CatchUpAction::Undo => Ok(Some(catchup::undo(store))),
+                CatchUpAction::Read(scope) => catchup::mark_read(state, scope, store),
+                _ => Ok(None),
+            };
+
+            return res.map_err(|e| EditError::Failure(e.to_string()));
+        }
+
         // Section and paragraph motions move between rooms in :catchup.
         if let IambWindow::CatchUp(state, _) = self &&
             let EditorAction::Edit(op, EditTarget::Motion(motion, count)) = act &&

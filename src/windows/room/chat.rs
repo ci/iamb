@@ -229,6 +229,7 @@ impl ChatState {
                 )
                 .await
             },
+            MessageAction::CopyLink => msg_copy_link(msg, ctx),
             MessageAction::Edit => {
                 if msg.sender != settings.profile.user_id {
                     let msg = "Cannot edit messages sent by someone else";
@@ -640,23 +641,48 @@ fn get_joined(id: &RoomId, worker: &Requester) -> Result<MatrixRoom, IambError> 
     }
 }
 
-fn open_links(msg: &Message) -> UIError<IambInfo> {
-    let links = msg.find_links();
+/// Act on one of a message's links: straight away if it only has one, or else after picking it.
+fn with_link(
+    msg: &Message,
+    ctx: ProgramContext,
+    act: fn(String) -> IambAction,
+) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    let mut links = msg.find_links();
+
+    if links.len() == 1 &&
+        let Some((_, url)) = links.pop()
+    {
+        return Ok(vec![(act(url.to_string()).into(), ctx)]);
+    }
 
     if links.is_empty() {
-        return IambError::NoAttachment.into();
+        return Err(IambError::NoAttachment.into());
     }
 
     let choices = links
         .into_iter()
-        .map(|l| {
-            let url = l.1.to_string();
-            let act = IambAction::OpenLink(url.clone()).into();
-            MultiChoiceItem::new(l.0, url, vec![act])
+        .map(|(c, url)| {
+            let url = url.to_string();
+            MultiChoiceItem::new(c, url.clone(), vec![act(url).into()])
         })
         .collect();
     let dialog = MultiChoice::new(choices);
-    UIError::NeedConfirm(Box::new(dialog))
+    Err(UIError::NeedConfirm(Box::new(dialog)))
+}
+
+fn open_links(
+    msg: &Message,
+    ctx: ProgramContext,
+) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    with_link(msg, ctx, IambAction::OpenLink)
+}
+
+/// Copy one of a message's links to the clipboard.
+pub fn msg_copy_link(
+    msg: &Message,
+    ctx: ProgramContext,
+) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    with_link(msg, ctx, IambAction::Copy)
 }
 
 pub async fn msg_download(
@@ -669,8 +695,7 @@ pub async fn msg_download(
     tunables: &TunableValues,
 ) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
     if let MessageEvent::State(_) = &msg.event {
-        let err = open_links(msg);
-        return Err(err);
+        return open_links(msg, ctx);
     }
 
     if let Some(msgtype) = msg.event.msgtype() {
@@ -710,8 +735,7 @@ pub async fn msg_download(
                 if !flags.contains(DownloadFlags::OPEN) {
                     return Err(IambError::NoAttachment.into());
                 }
-                let err = open_links(msg);
-                return Err(err);
+                return open_links(msg, ctx);
             },
         };
         if filename.is_dir() {
@@ -1565,6 +1589,49 @@ pub fn auto_toggle_focus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn link_message(body: &str) -> Message {
+        let ev: matrix_sdk::ruma::events::room::message::RoomMessageEvent =
+            serde_json::from_value(serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$link:example.com",
+                "room_id": "!a:example.com",
+                "sender": "@user2:example.com",
+                "origin_server_ts": 10,
+                "content": { "msgtype": "m.text", "body": body },
+            }))
+            .unwrap();
+        ev.into()
+    }
+
+    fn actions(res: IambResult<Vec<(Action<IambInfo>, EditContext)>>) -> Vec<String> {
+        res.unwrap().into_iter().map(|(act, _)| format!("{act:?}")).collect()
+    }
+
+    #[test]
+    fn test_with_link() {
+        let ctx = ProgramContext::default();
+
+        // A single link is used straight away.
+        let msg = link_message("see https://example.com/issue/1");
+        assert_eq!(actions(open_links(&msg, ctx.clone())), vec![
+            r#"Application(OpenLink("https://example.com/issue/1"))"#
+        ]);
+        assert_eq!(actions(msg_copy_link(&msg, ctx.clone())), vec![
+            r#"Application(Copy("https://example.com/issue/1"))"#
+        ]);
+
+        // Several links ask which one.
+        let msg = link_message("https://example.com/a and https://example.com/b");
+        assert!(matches!(open_links(&msg, ctx.clone()), Err(UIError::NeedConfirm(_))));
+
+        // No links at all.
+        let msg = link_message("nothing to see");
+        assert!(matches!(
+            msg_copy_link(&msg, ctx),
+            Err(UIError::Application(IambError::NoAttachment))
+        ));
+    }
 
     use modalkit::actions::{EditAction, InsertTextAction};
 

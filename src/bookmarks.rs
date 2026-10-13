@@ -185,7 +185,7 @@ pub async fn bookmark_command(
 
     let note = content.bookmarks.get(&event_id).and_then(|b| b.note.clone());
     let removed = !content.bookmarks.contains_key(&event_id);
-    store.application.bookmarks.set_room(room_id.clone(), content);
+    store.application.set_bookmarks(room_id.clone(), content);
 
     if removed {
         return Ok(Some("Removed bookmark".into()));

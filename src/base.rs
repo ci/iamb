@@ -51,7 +51,7 @@ use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::bookmarks::Bookmarks;
+use crate::bookmarks::{Bookmarks, BookmarksEventContent};
 use crate::catchup::PendingReads;
 use crate::message::poll::{
     Poll,
@@ -1453,6 +1453,9 @@ pub struct RoomInfo {
 
     /// How many times fetching each pinned event for the `:pinned` window has failed.
     pub pinned_failures: HashMap<OwnedEventId, u8>,
+
+    /// Messages in this room that are bookmarked, to mark them in the timeline.
+    pub bookmarked: HashSet<OwnedEventId>,
 }
 
 impl Default for RoomInfo {
@@ -1478,6 +1481,7 @@ impl Default for RoomInfo {
             pinned_events: Default::default(),
             pinned_previews: Default::default(),
             pinned_failures: Default::default(),
+            bookmarked: Default::default(),
             unloaded_edits: Default::default(),
             unloaded_polls: Default::default(),
             unloaded_unstable_polls: Default::default(),
@@ -2662,6 +2666,13 @@ impl ChatStore {
         };
 
         Ok(store)
+    }
+
+    /// Replace a room's bookmarks with what's in its account data.
+    pub fn set_bookmarks(&mut self, room_id: OwnedRoomId, content: BookmarksEventContent) {
+        let info = self.rooms.get_or_default(room_id.clone());
+        info.bookmarked = content.bookmarks.keys().cloned().collect();
+        self.bookmarks.set_room(room_id, content);
     }
 
     /// Send the `:catchup` read receipts whose undo delay has passed.

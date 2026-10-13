@@ -1125,6 +1125,21 @@ impl Message {
         !prev.timestamp.same_day(self.timestamp)
     }
 
+    /// The labels shown under the message, like "(pinned, edited)".
+    fn labels(&self, info: &RoomInfo) -> Option<String> {
+        let event_id = self.event.event_id();
+        let labels = [
+            ("pinned", event_id.is_some_and(|id| info.is_pinned(id))),
+            ("bookmarked", event_id.is_some_and(|id| info.bookmarked.contains(id))),
+            ("edited", self.event.is_edited()),
+        ]
+        .into_iter()
+        .filter_map(|(label, applies)| applies.then_some(label))
+        .collect::<Vec<_>>();
+
+        (!labels.is_empty()).then(|| format!("({})", labels.join(", ")))
+    }
+
     /// Whether the current user's read marker sits right before this message.
     ///
     /// Each thread keeps its own marker, so the rule only shows up in the view
@@ -1342,19 +1357,12 @@ impl Message {
             fmt.push_spans(space_span(width, style).into(), style, &mut text);
         }
 
-        let pinned = self.event.event_id().is_some_and(|id| info.is_pinned(id));
-        let label = match (self.event.is_edited(), pinned) {
-            (true, true) => Some("(pinned, edited)"),
-            (true, false) => Some("(edited)"),
-            (false, true) => Some("(pinned)"),
-            (false, false) => None,
-        };
-
-        if let Some(label) = label {
+        if let Some(label) = self.labels(info) {
+            let padding = fmt.width().saturating_sub(label.len());
             fmt.push_spans(
                 Line::from(vec![
                     Span::styled(label, style.fg(Color::Gray)),
-                    space_span(fmt.width().saturating_sub(label.len()), style),
+                    space_span(padding, style),
                 ]),
                 style,
                 &mut text,
@@ -1983,6 +1991,23 @@ pub mod tests {
             )),
             "[Attached Video: Alt text (44 kB)]".to_string().into()
         );
+    }
+
+    #[test]
+    fn test_labels() {
+        let mut info = mock_room();
+        let labels = |info: &RoomInfo| info.get_event(&MSG1_EVID).unwrap().labels(info);
+
+        assert_eq!(labels(&info), None);
+
+        info.bookmarked.insert(MSG1_EVID.clone());
+        assert_eq!(labels(&info).as_deref(), Some("(bookmarked)"));
+
+        info.pinned_events = vec![MSG1_EVID.clone()];
+        assert_eq!(labels(&info).as_deref(), Some("(pinned, bookmarked)"));
+
+        info.bookmarked.clear();
+        assert_eq!(labels(&info).as_deref(), Some("(pinned)"));
     }
 
     #[test]

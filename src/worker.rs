@@ -787,7 +787,7 @@ async fn load_bookmarks(client: Client, store: AsyncProgramStore) {
         };
 
         let mut locked = store.lock().await;
-        locked.application.bookmarks.set_room(room.room_id().to_owned(), content);
+        locked.application.set_bookmarks(room.room_id().to_owned(), content);
     }
 }
 
@@ -2100,10 +2100,7 @@ impl ClientWorker {
              store: Ctx<AsyncProgramStore>| {
                 async move {
                     let mut locked = store.lock().await;
-                    locked
-                        .application
-                        .bookmarks
-                        .set_room(room.room_id().to_owned(), ev.content);
+                    locked.application.set_bookmarks(room.room_id().to_owned(), ev.content);
                 }
             },
         );

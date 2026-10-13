@@ -42,6 +42,20 @@ pub struct PreviewManager {
 }
 
 impl PreviewManager {
+    /// A manager without any previews, for showing messages as text in places that can't draw
+    /// images, like list windows.
+    pub fn text_only() -> &'static Self {
+        static TEXT_ONLY: std::sync::LazyLock<PreviewManager> = std::sync::LazyLock::new(|| {
+            PreviewManager {
+                picker: Picker::halfblocks().into(),
+                permits: Arc::new(Semaphore::new(0)),
+                previews: Default::default(),
+            }
+        });
+
+        &TEXT_ONLY
+    }
+
     pub fn new(settings: &ApplicationSettings) -> Self {
         let picker = picker_from_settings(settings);
 

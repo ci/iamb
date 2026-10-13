@@ -24,12 +24,27 @@ pub type CatchUpListState = ListState<CatchUpItem, IambInfo>;
 pub struct CatchUpSection {
     room_id: OwnedRoomId,
     title: String,
+    unread: usize,
+}
+
+impl CatchUpSection {
+    fn line(&self, marker: char, style: Style) -> Line<'static> {
+        let heading = style.fg(Color::Cyan).add_modifier(StyleModifier::BOLD);
+        let summary = match self.unread {
+            0 => " · read".to_string(),
+            n => format!(" · {n} unread"),
+        };
+
+        Line::from(vec![
+            Span::styled(format!("{marker} {}", self.title), heading),
+            Span::styled(summary, style.fg(Color::Gray)),
+        ])
+    }
 }
 
 impl From<CatchUpSection> for Line<'static> {
     fn from(section: CatchUpSection) -> Self {
-        let title = format!("▾ {}", section.title);
-        Line::styled(title, Style::default().add_modifier(StyleModifier::BOLD))
+        section.line('▾', Style::default())
     }
 }
 
@@ -46,6 +61,8 @@ pub struct CatchUpItem {
     unread: usize,
     /// Whether this item stands in for a whole collapsed room.
     collapsed: bool,
+    /// Whether this is the last item for its room, to leave space before the next one.
+    last: bool,
     section: CatchUpSection,
 }
 
@@ -74,6 +91,32 @@ impl ListItem<IambInfo> for CatchUpItem {
         vwctx: &ViewportContext<ListCursor>,
         store: &'a ProgramStore,
     ) -> Text<'a> {
+        let mut text = self.show_item(selected, vwctx, store);
+
+        if self.last {
+            text.push_line(Line::default());
+        }
+
+        text
+    }
+
+    fn get_word(&self) -> Option<String> {
+        self.event_id.to_string().into()
+    }
+
+    fn get_section(&self) -> Option<&Self::Section> {
+        // A collapsed room's row already names the room.
+        (!self.collapsed).then_some(&self.section)
+    }
+}
+
+impl CatchUpItem {
+    fn show_item<'a>(
+        &'a self,
+        selected: bool,
+        vwctx: &ViewportContext<ListCursor>,
+        store: &'a ProgramStore,
+    ) -> Text<'a> {
         let settings = &store.application.settings;
         let style = settings.theme.default;
 
@@ -83,25 +126,7 @@ impl ListItem<IambInfo> for CatchUpItem {
             } else {
                 style
             };
-            let summary = match self.unread {
-                0 => " — read".to_string(),
-                1 => " — 1 unread".to_string(),
-                n => format!(" — {n} unread"),
-            };
-            let summary_style = if self.unread == 0 {
-                style.fg(Color::Gray)
-            } else {
-                style
-            };
-
-            return Line::from(vec![
-                Span::styled(
-                    format!("▸ {}", self.section.title),
-                    style.add_modifier(StyleModifier::BOLD),
-                ),
-                Span::styled(summary, summary_style),
-            ])
-            .into();
+            return self.section.line('▸', style).into();
         }
 
         let Some(info) = store.application.rooms.get(&self.room_id) else {
@@ -113,7 +138,8 @@ impl ListItem<IambInfo> for CatchUpItem {
         };
 
         let prev = self.prev.as_ref().and_then(|event_id| info.get_event(event_id));
-        let previews = &store.application.previews;
+        // Lists can't draw images, so show attachments as text; they show in the room itself.
+        let previews = PreviewManager::text_only();
         let text = msg.show(prev, selected, vwctx.get_width(), info, settings, previews);
 
         if self.read {
@@ -121,15 +147,6 @@ impl ListItem<IambInfo> for CatchUpItem {
         } else {
             text
         }
-    }
-
-    fn get_word(&self) -> Option<String> {
-        self.event_id.to_string().into()
-    }
-
-    fn get_section(&self) -> Option<&Self::Section> {
-        // A collapsed room's row already names the room.
-        (!self.collapsed).then_some(&self.section)
     }
 }
 
@@ -296,7 +313,8 @@ impl CatchUpFeed {
             seen.extend(unread);
 
             let title = info.name.clone().unwrap_or_else(|| "Untitled Matrix Room".into());
-            let section = CatchUpSection { room_id: room_id.clone(), title };
+            let unread = seen.keys().filter(|key| !read.has_read(key)).count();
+            let section = CatchUpSection { room_id: room_id.clone(), title, unread };
 
             if self.collapsed.contains(room_id) {
                 items.extend(collapsed_item(seen, &read, section));
@@ -315,8 +333,15 @@ impl CatchUpFeed {
                     read: is_read,
                     unread: usize::from(!is_read),
                     collapsed: false,
+                    last: false,
                     section: section.clone(),
                 });
+            }
+
+            if let Some(item) = items.last_mut() &&
+                item.room_id == *room_id
+            {
+                item.last = true;
             }
         }
 
@@ -346,6 +371,7 @@ fn collapsed_item(
         read: unread == 0,
         unread,
         collapsed: true,
+        last: false,
         section,
     })
 }
@@ -507,7 +533,11 @@ mod tests {
         let room_id = OwnedRoomId::try_from(room).unwrap();
         let ts = MilliSecondsSinceUnixEpoch(ts.try_into().unwrap());
         let key = MessageKey { ts: MessageTimeStamp(ts), id: event.clone().into() };
-        let section = CatchUpSection { room_id: room_id.clone(), title: room.into() };
+        let section = CatchUpSection {
+            room_id: room_id.clone(),
+            title: room.into(),
+            unread: 0,
+        };
 
         CatchUpItem {
             room_id,
@@ -517,6 +547,7 @@ mod tests {
             read,
             unread: usize::from(!read),
             collapsed: false,
+            last: false,
             section,
         }
     }
@@ -528,7 +559,7 @@ mod tests {
 
     fn collapsed_room(room: &str, read_up_to: Option<u64>) -> CatchUpItem {
         let room_id = OwnedRoomId::try_from(room).unwrap();
-        let section = CatchUpSection { room_id, title: room.into() };
+        let section = CatchUpSection { room_id, title: room.into(), unread: 0 };
         let seen = BTreeMap::from([
             (key(1, &MSG1_EVID), MSG1_EVID.clone()),
             (key(2, &MSG2_EVID), MSG2_EVID.clone()),
@@ -575,6 +606,24 @@ mod tests {
         assert!(res.unwrap().to_string().starts_with("Marking 3 messages as read"));
         assert_eq!(pending(&mut store), vec![("!a:example.com".into(), MSG3_EVID.clone())]);
         assert_eq!(selected_index(&state), Some(1));
+    }
+
+    #[test]
+    fn test_section_line() {
+        let room_id = OwnedRoomId::try_from("!a:example.com").unwrap();
+        let mut section = CatchUpSection { room_id, title: "general".into(), unread: 3 };
+        let text =
+            |line: Line| line.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+
+        assert_eq!(text(section.clone().into()), "▾ general · 3 unread");
+        assert_eq!(text(section.line('▸', Style::default())), "▸ general · 3 unread");
+
+        section.unread = 0;
+        assert_eq!(text(section.into()), "▾ general · read");
+
+        // Lists show attachments as text, without image previews.
+        let source = MediaSource::Plain("mxc://example.com/image".into());
+        assert!(PreviewManager::text_only().get(&source, PreviewKind::Message).is_none());
     }
 
     #[test]

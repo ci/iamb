@@ -1219,6 +1219,17 @@ fn iamb_download(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult 
     return Ok(step);
 }
 
+fn iamb_copylink(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let mact = IambAction::from(MessageAction::CopyLink);
+    let step = CommandStep::Continue(mact.into(), ctx.context.clone());
+
+    return Ok(step);
+}
+
 fn iamb_open(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     let mut args = desc.arg.paths()?;
 
@@ -1276,6 +1287,11 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         f: iamb_download,
     });
     cmds.add_command(ProgramCommand { name: "open".into(), aliases: vec![], f: iamb_open });
+    cmds.add_command(ProgramCommand {
+        name: "copylink".into(),
+        aliases: vec![],
+        f: iamb_copylink,
+    });
     cmds.add_command(ProgramCommand { name: "edit".into(), aliases: vec![], f: iamb_edit });
     cmds.add_command(ProgramCommand {
         name: "follow".into(),

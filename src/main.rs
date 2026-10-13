@@ -38,7 +38,7 @@ use modalkit::crossterm;
 use modalkit::crossterm::cursor::SetCursorStyle;
 use modalkit::crossterm::event::{Event, KeyEventKind, MouseEventKind, poll, read};
 use modalkit::editing::key::KeyManager;
-use modalkit::editing::store::Store;
+use modalkit::editing::store::{RegisterCell, RegisterPutFlags, Store};
 use modalkit::keybindings::dialog::Pager;
 use modalkit::keybindings::{BindingMachine, InputBindings};
 use modalkit::ui::FocusList;
@@ -621,15 +621,7 @@ impl Application {
 
                 bookmarks::bookmark_command(act, room_id, event_id, store).await?
             },
-            IambAction::CatchUp(CatchUpAction::Undo) => {
-                let msg = match store.application.pending_reads.undo() {
-                    0 => "Nothing to undo".to_string(),
-                    1 => "Cancelled marking 1 room as read".to_string(),
-                    n => format!("Cancelled marking {n} rooms as read"),
-                };
-
-                Some(msg.into())
-            },
+            IambAction::CatchUp(CatchUpAction::Undo) => Some(windows::catchup::undo(store)),
             IambAction::CatchUp(act) => {
                 self.screen.current_window_mut()?.catchup_command(act, store)?
             },
@@ -695,6 +687,15 @@ impl Application {
                 self.screen.current_window_mut()?.send_command(act, ctx, store).await?
             },
 
+            IambAction::Copy(text) => {
+                let cell = RegisterCell::new(TargetShape::CharWise, EditRope::from(text.as_str()));
+                store
+                    .registers
+                    .put(&Register::SelectionClipboard, cell, RegisterPutFlags::NONE)
+                    .map_err(|e| UIError::Failure(e.to_string()))?;
+
+                Some(format!("Copied {text}").into())
+            },
             IambAction::OpenLink(url) => {
                 let matrix_uri = MatrixUri::parse(&url).ok();
                 let matrix_to_uri = MatrixToUri::parse(&url).ok();

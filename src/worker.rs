@@ -238,6 +238,7 @@ async fn update_event_receipts(info: &mut RoomInfo, room: &MatrixRoom, event_id:
 enum Plan {
     Messages(OwnedRoomId, Vec<MessageNeed>),
     Members(OwnedRoomId),
+    FullMembers(OwnedRoomId),
     Pinned(OwnedRoomId, Vec<OwnedEventId>),
     RoomPreview(OwnedRoomOrAliasId),
 }
@@ -249,6 +250,10 @@ async fn load_plans(store: &AsyncProgramStore) -> Vec<Plan> {
 
     for room in need_load.preview_needs() {
         plan.push(Plan::RoomPreview(room));
+    }
+
+    for room_id in need_load.full_members_needs() {
+        plan.push(Plan::FullMembers(room_id));
     }
 
     for (room_id, need) in std::mem::take(need_load).into_iter() {
@@ -315,6 +320,14 @@ async fn run_plan(client: &Client, store: &AsyncProgramStore, plan: Plan) {
             let res = members_load(client, &room_id).await;
             let mut locked = store.lock().await;
             members_insert(room_id, res, locked.deref_mut());
+        },
+        Plan::FullMembers(room_id) => {
+            let res = match client.get_room(&room_id) {
+                Some(room) => room.members(RoomMemberships::all()).await.map_err(IambError::from),
+                None => Err(IambError::UnknownRoom(room_id.clone())),
+            };
+            let mut locked = store.lock().await;
+            members_insert(room_id, res.map_err(Into::into), locked.deref_mut());
         },
         Plan::Pinned(room_id, event_ids) => {
             let msgs = pinned_load(client, &room_id, event_ids).await;

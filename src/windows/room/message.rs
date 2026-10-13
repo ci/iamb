@@ -106,6 +106,7 @@ impl MessageState {
 
                 Ok(vec![(act, ctx)])
             },
+            MessageAction::CopyLink => chat::msg_copy_link(msg, ctx),
             MessageAction::Edit | MessageAction::Reply => {
                 let msg = "Cannot write message in this view.";
                 let err = UIError::Failure(msg.into());

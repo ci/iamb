@@ -138,7 +138,16 @@ Expand every room.
 .Pp
 In the
 .Sy ":catchup"
-window, the section motions
+window,
+.Sy x
+marks the selected message and the ones before it in its room as read,
+.Sy X
+marks everything above it as read,
+.Sy dd
+marks its whole room as read, and
+.Sy u
+undoes the last of these.
+The section motions
 .Sy ]]
 and
 .Sy [[
@@ -209,6 +218,16 @@ View more information about the focused message.
 Download an attachment from the selected message and save it to the optional path.
 .It Sy ":open [path]"
 Download and then open an attachment, or open a link in a message.
+A message with a single link opens it straight away; otherwise, pick one from the list.
+This also works on the selected message in the
+.Sy ":catchup" ,
+.Sy ":bookmarks"
+and
+.Sy ":pinned"
+windows, as does
+.Sy ":download" .
+.It Sy ":copylink"
+Copy a link in the selected message to the clipboard, picking one if there are several.
 .It Sy ":edit"
 Edit the selected message.
 .It Sy ":editor"

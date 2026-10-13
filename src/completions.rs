@@ -684,8 +684,10 @@ fn complete_cmdarg(
 
         // These have no arguments
         "cancel" | "chats" | "dms" | "editor" | "edit" | "forget" | "invites" | "leave" |
-        "bookmark" | "bookmarks" | "members" | "mentions" | "message" | "nicks" | "pin" |
-        "pinned" | "unbookmark" | "unpin" | "replied" | "reply" | "rooms" | "welcome" => vec![],
+        "bookmark" | "bookmarks" | "copylink" | "members" | "mentions" | "message" | "nicks" |
+        "pin" | "pinned" | "unbookmark" | "unpin" | "replied" | "reply" | "rooms" | "welcome" => {
+            vec![]
+        },
 
         "abo" | "aboveleft" | "bel" | "belowright" | "hor" | "horizontal" | "lefta" |
         "leftabove" | "rightb" | "rightbelow" | "tab" | "vert" | "vertical" => {

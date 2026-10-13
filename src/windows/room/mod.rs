@@ -23,7 +23,7 @@ use crate::windows::room::message::{MessageState, MessageWidget};
 use crate::windows::room::not_joined::{NotJoined, NotJoinedState};
 use crate::windows::room::space::{Space, SpaceState};
 
-mod chat;
+pub(crate) mod chat;
 mod message;
 mod not_joined;
 mod scrollback;

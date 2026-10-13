@@ -651,6 +651,9 @@ fn complete_cmdarg(
 
         "verify" => complete_iamb_verify(args, store),
 
+        "whois" if args.len() == 1 => complete_users(&args[0], store),
+        "whois" => vec![],
+
         // These have no arguments
         "cancel" | "chats" | "dms" | "editor" | "edit" | "forget" | "invites" | "leave" |
         "members" | "mentions" | "message" | "pin" | "pinned" | "unpin" | "replied" | "reply" |

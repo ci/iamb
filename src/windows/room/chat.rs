@@ -583,6 +583,11 @@ impl ChatState {
         &self.room
     }
 
+    /// The sender of the selected message.
+    pub fn selected_sender(&self, info: &RoomInfo) -> Option<OwnedUserId> {
+        self.scrollback.get(info).map(|msg| msg.sender.clone())
+    }
+
     pub fn id(&self) -> &RoomId {
         &self.room_id
     }

@@ -75,6 +75,12 @@ Mark all rooms as read.
 View a list of rooms with mentions of the current user.
 .It Sy ":invites"
 View a list of rooms you are invited to.
+.It Sy ":whois [user]"
+Show what's known about a user: their display name and avatar, presence, whether their identity
+is verified, your direct message with them, and the rooms you share (along with any different
+display name they use there).
+Without an argument, this describes the sender of the selected message, or the selected user in
+.Sy ":members" .
 .It Sy ":theme [name]"
 Change the current theme.
 .It Sy ":welcome"

@@ -71,6 +71,7 @@ mod prelude;
 mod preview;
 mod util;
 mod verifications;
+mod whois;
 mod windows;
 mod worker;
 
@@ -604,6 +605,22 @@ impl Application {
                 }
 
                 None
+            },
+
+            IambAction::Whois(user) => {
+                let user_id = match user {
+                    Some(user) => {
+                        OwnedUserId::try_from(user.as_str())
+                            .map_err(|_| IambError::InvalidUserId(user))?
+                    },
+                    None => {
+                        self.screen.current_window_mut()?.selected_user(store).ok_or_else(|| {
+                            UIError::Failure("Select a message or member, or give a user ID".into())
+                        })?
+                    },
+                };
+
+                return whois::whois(user_id, store).await;
             },
 
             IambAction::ToggleScrollbackFocus => {

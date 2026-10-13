@@ -968,6 +968,21 @@ impl RoomState {
             RoomState::Message(msg) => Some(msg.room_id()),
         }
     }
+
+    /// The sender of the selected message.
+    pub fn selected_sender(&self, store: &ProgramStore) -> Option<OwnedUserId> {
+        match self {
+            RoomState::Chat(chat) => {
+                let info = store.application.rooms.get(chat.id())?;
+                chat.selected_sender(info)
+            },
+            RoomState::Message(msg) => {
+                let info = store.application.rooms.get(msg.room_id())?;
+                info.get_message(&msg.id()).map(|msg| msg.sender.clone())
+            },
+            RoomState::Space(_) | RoomState::NotJoined(_) => None,
+        }
+    }
 }
 
 impl Editable<ProgramContext, ProgramStore, IambInfo> for RoomState {

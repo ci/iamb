@@ -1545,14 +1545,25 @@ impl Message {
             vec![]
         };
 
-        if links.is_empty() {
-            links = linkify::LinkFinder::new()
-                .links(&self.event.body())
-                .filter_map(|u| Url::parse(u.as_str()).ok())
-                .scan(TreeGenState { link_num: 0 }, |state, u| {
-                    state.next_link_char().map(|c| (c, u))
-                })
-                .collect();
+        // Formatted messages can also have plain URLs that the sender's client didn't turn into
+        // links, so look for those too, numbering them after the formatted ones.
+        let link_num = u8::try_from(links.len()).unwrap_or(u8::MAX);
+        let mut state = TreeGenState { link_num };
+        let body = self.event.body();
+        let plain = linkify::LinkFinder::new()
+            .links(&body)
+            .filter_map(|u| Url::parse(u.as_str()).ok());
+
+        for url in plain {
+            if links.iter().any(|(_, link)| *link == url) {
+                continue;
+            }
+
+            let Some(c) = state.next_link_char() else {
+                break;
+            };
+
+            links.push((c, url));
         }
 
         links
@@ -1904,6 +1915,54 @@ pub mod tests {
 "#
             )
         );
+    }
+
+    #[test]
+    fn test_find_links() {
+        let message = |content: serde_json::Value| -> Message {
+            let ev: RoomMessageEvent = serde_json::from_value(serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$links:example.com",
+                "room_id": "!a:example.com",
+                "sender": "@user2:example.com",
+                "origin_server_ts": 10,
+                "content": content,
+            }))
+            .unwrap();
+            ev.into()
+        };
+        let urls = |msg: &Message| {
+            msg.find_links()
+                .into_iter()
+                .map(|(c, u)| format!("{c} {u}"))
+                .collect::<Vec<_>>()
+        };
+
+        // Plain URLs in formatted messages are found after the formatted links.
+        let msg = message(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "Alan: see https://docs.example.com/doc and https://docs.example.com/doc",
+            "format": "org.matrix.custom.html",
+            "formatted_body": "<a href=\"https://matrix.to/#/@alan:example.com\">Alan</a>: see https://docs.example.com/doc and https://docs.example.com/doc",
+        }));
+        assert_eq!(urls(&msg), vec![
+            "0 matrix:u/alan:example.com",
+            "1 https://docs.example.com/doc",
+        ]);
+
+        // A link in both the formatted and plain text is only listed once.
+        let msg = message(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "https://example.com/a",
+            "format": "org.matrix.custom.html",
+            "formatted_body": "<a href=\"https://example.com/a\">https://example.com/a</a>",
+        }));
+        assert_eq!(urls(&msg), vec!["0 https://example.com/a"]);
+
+        // Plain messages still work.
+        let msg =
+            message(serde_json::json!({ "msgtype": "m.text", "body": "https://example.com/b" }));
+        assert_eq!(urls(&msg), vec!["0 https://example.com/b"]);
     }
 
     #[test]

@@ -216,8 +216,6 @@ impl StatefulWidget for MessageWidget<'_> {
             &mut self.store.application;
         let style = settings.theme.rooms.default;
 
-        let saved_tunables = SavedTunables::setup(&mut settings.tunables);
-
         let info = rooms.get_or_default(state.room_id().to_owned());
 
         // A message fetched outside the scrollback is shown as it is, but loading up to it in the
@@ -251,6 +249,9 @@ impl StatefulWidget for MessageWidget<'_> {
                 },
             }
         };
+
+        // Set after the early returns above, which would otherwise leave them changed.
+        let saved_tunables = SavedTunables::setup(&mut settings.tunables);
 
         // load image previews
         {

@@ -359,11 +359,11 @@ fn iamb_edit(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
 fn iamb_react(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     let mut args = desc.arg.strings()?;
 
-    if args.len() != 1 {
+    if args.len() > 1 {
         return Result::Err(CommandError::InvalidArgument);
     }
 
-    let react = args.remove(0);
+    let react = args.pop();
     let mact = IambAction::from(MessageAction::React(react, desc.bang));
     let step = CommandStep::Continue(mact.into(), ctx.context.clone());
 

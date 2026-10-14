@@ -241,8 +241,11 @@ Open an external
 to compose a message.
 .It Sy ":react [shortcode]"
 React to the selected message with an Emoji.
+When others already reacted with the same Emoji written differently, like with
+or without a variation selector, join their reaction instead.
+When no arguments are given, pick one of the message's reactions to add yours to.
 .It Sy ":unreact [shortcode]"
-Remove your reaction from the selected message.
+Remove your reaction from the selected message, however its Emoji was written.
 When no arguments are given, remove all of your reactions from the message.
 .It Sy ":redact [reason]"
 Redact the selected message with the optional reason.

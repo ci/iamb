@@ -37,7 +37,7 @@ use crate::base::{DownloadFlags, EchoLocation};
 use crate::config::EncryptionIndicatorLocation;
 use crate::message::{MessageId, text_to_message, text_to_text_message_event_content};
 use crate::prelude::*;
-use crate::util::SuspendedTty;
+use crate::util::{SuspendedTty, same_emoji};
 use crate::windows::room::scrollback::{Scrollback, ScrollbackState};
 
 /// How long to wait for a message to load before giving up on jumping to it.
@@ -806,24 +806,28 @@ pub async fn msg_react(
     info: &RoomInfo,
     worker: &Requester,
     id: &RoomId,
-    reaction: String,
+    reaction: Option<String>,
     literal: bool,
 ) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
-    let emoji = if literal {
-        reaction
-    } else if let Some(emoji) =
-        emojis::get(&reaction).or_else(|| emojis::get_by_shortcode(&reaction))
-    {
-        emoji.to_string()
-    } else {
-        let msg = format!(
-            "{reaction:?} is not a known Emoji shortcode; do you want to react with exactly {reaction:?}?"
-        );
-        let act = IambAction::Message(MessageAction::React(reaction, true));
-        let prompt = PromptYesNo::new(msg, vec![Action::from(act)]);
-        let prompt = Box::new(prompt);
+    let emoji = match reaction {
+        None => return react_picker(msg, settings, info),
+        Some(reaction) if literal => reaction,
+        Some(reaction) => {
+            if let Some(emoji) =
+                emojis::get(&reaction).or_else(|| emojis::get_by_shortcode(&reaction))
+            {
+                emoji.to_string()
+            } else {
+                let msg = format!(
+                    "{reaction:?} is not a known Emoji shortcode; do you want to react with exactly {reaction:?}?"
+                );
+                let act = IambAction::Message(MessageAction::React(Some(reaction), true));
+                let prompt = PromptYesNo::new(msg, vec![Action::from(act)]);
+                let prompt = Box::new(prompt);
 
-        return Err(UIError::NeedConfirm(prompt));
+                return Err(UIError::NeedConfirm(prompt));
+            }
+        },
     };
 
     let room = get_joined(id, worker)?;
@@ -851,12 +855,18 @@ pub async fn msg_react(
         MessageEvent::UnstablePoll(ev) => ev.event_id().to_owned(),
     };
 
-    if info.user_reactions_contains(&settings.profile.user_id, &event_id, &emoji) {
+    if info.user_reactions_contains(&settings.profile.user_id, &event_id, &emoji, literal) {
         let msg = format!("You’ve already reacted to this message with {emoji}");
         let err = UIError::Failure(msg);
 
         return Err(err);
     }
+
+    let emoji = if literal {
+        emoji
+    } else {
+        info.same_reaction(&event_id, &emoji).map_or(emoji, str::to_owned)
+    };
 
     let reaction = Annotation::new(event_id, emoji);
     let msg = ReactionEventContent::new(reaction);
@@ -865,6 +875,57 @@ pub async fn msg_react(
 
     Ok(vec![])
 }
+
+/// Pick one of a message's reactions to add ours to.
+fn react_picker(
+    msg: &Message,
+    settings: &ApplicationSettings,
+    info: &RoomInfo,
+) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    let Some(event_id) = msg.event.event_id() else {
+        let msg = "Cannot react to a local echo";
+        return Err(UIError::Failure(msg.into()));
+    };
+
+    // Messages fetched outside the scrollback, like old bookmarks, come without their reactions.
+    if info.get_event(event_id).is_none() {
+        let msg = "This message's reactions haven't loaded; open it in its room first";
+        return Err(UIError::Failure(msg.into()));
+    }
+
+    let user_id = &settings.profile.user_id;
+    let reactions = info.get_reactions(event_id);
+    if reactions.is_empty() {
+        let msg = "This message has no reactions yet; use :react <emoji>";
+        return Err(UIError::Failure(msg.into()));
+    }
+
+    let choices = reactions
+        .into_iter()
+        .filter(|(key, _, _)| !info.user_reactions_contains(user_id, event_id, key, false))
+        .zip(REACTION_CHOICES.chars())
+        .map(|((key, users, _), c)| {
+            let name = emojis::get(key)
+                .and_then(|emoji| emoji.shortcode())
+                .map(|shortcode| format!(" :{shortcode}:"))
+                .unwrap_or_default();
+            let label = format!("{key}{name} ({})", users.len());
+            let act = IambAction::Message(MessageAction::React(Some(key.to_owned()), true));
+
+            MultiChoiceItem::new(c, label, vec![act.into()])
+        })
+        .collect::<Vec<_>>();
+
+    if choices.is_empty() {
+        let msg = "You've already added to all of this message's reactions";
+        return Err(UIError::Failure(msg.into()));
+    }
+
+    Err(UIError::NeedConfirm(Box::new(MultiChoice::new(choices))))
+}
+
+/// The keys for picking a reaction.
+const REACTION_CHOICES: &str = "123456789abcdefghijklmnopqrstuvwxyz";
 
 pub async fn msg_redact(
     msg: &Message,
@@ -995,14 +1056,10 @@ pub async fn msg_unreact(
             return None;
         }
 
-        if let Some(emoji) = &emoji {
-            if emoji == reaction {
-                return Some(event_id);
-            } else {
-                return None;
-            }
-        } else {
-            return Some(event_id);
+        match &emoji {
+            Some(emoji) if literal => (emoji == reaction).then_some(event_id),
+            Some(emoji) => same_emoji(emoji, reaction).then_some(event_id),
+            None => Some(event_id),
         }
     });
 

@@ -212,19 +212,26 @@ impl StatefulWidget for MessageWidget<'_> {
     type State = MessageState;
 
     fn render(self, area: Rect, buffer: &mut Buffer, state: &mut Self::State) {
-        let ChatStore { rooms, worker, settings, previews, .. } = &mut self.store.application;
+        let ChatStore { rooms, worker, settings, previews, need_load, .. } =
+            &mut self.store.application;
         let style = settings.theme.rooms.default;
 
-        let saved_tunables = SavedTunables::setup(&mut settings.tunables);
-
         let info = rooms.get_or_default(state.room_id().to_owned());
+
+        // A message fetched outside the scrollback is shown as it is, but loading up to it in the
+        // scrollback brings in its reactions and read receipts too.
+        if let MessageId::Origin(event_id) = &state.message_id &&
+            info.get_event(event_id).is_none() &&
+            info.get_pinned(event_id).is_some()
+        {
+            let room_id = state.room_id().to_owned();
+            need_load.need_message(room_id, event_id.to_owned());
+        }
+
         let Some(msg) = info.get_message(&state.message_id) else {
             match &state.message_id {
                 MessageId::Origin(event_id) => {
-                    self.store
-                        .application
-                        .need_load
-                        .need_message(state.room_id().to_owned(), event_id.to_owned());
+                    need_load.need_message(state.room_id().to_owned(), event_id.to_owned());
 
                     Paragraph::new(Span::styled("Loading...", style))
                         .alignment(Alignment::Center)
@@ -242,6 +249,9 @@ impl StatefulWidget for MessageWidget<'_> {
                 },
             }
         };
+
+        // Set after the early returns above, which would otherwise leave them changed.
+        let saved_tunables = SavedTunables::setup(&mut settings.tunables);
 
         // load image previews
         {

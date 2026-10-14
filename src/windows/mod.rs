@@ -659,6 +659,16 @@ impl IambWindow {
             return Err(IambError::NoSelectedRoom.into());
         };
 
+        // A collapsed :catchup room stands in for its newest message, which isn't shown.
+        let collapsed = match self {
+            IambWindow::CatchUp(state, _) => state.get().is_some_and(|item| item.is_collapsed()),
+            _ => false,
+        };
+        if collapsed && matches!(act, MessageAction::React(..) | MessageAction::Unreact(..)) {
+            let msg = "Expand the room to react to one of its messages";
+            return Err(UIError::Failure(msg.into()));
+        }
+
         match act {
             MessageAction::Download(filename, flags) => {
                 let ChatStore { rooms, worker, settings, .. } = &mut store.application;
@@ -684,6 +694,22 @@ impl IambWindow {
                     .ok_or(IambError::NoSelectedMessage)?;
 
                 room::chat::msg_copy_link(msg, ctx)
+            },
+            MessageAction::React(reaction, literal) => {
+                let ChatStore { rooms, worker, settings, .. } = &store.application;
+                let info = rooms.get(&room_id).ok_or(IambError::NoSelectedMessage)?;
+                let msg = info.get_pinned(&event_id).ok_or(IambError::NoSelectedMessage)?;
+
+                room::chat::msg_react(msg, settings, info, worker, &room_id, reaction, literal)
+                    .await
+            },
+            MessageAction::Unreact(reaction, literal) => {
+                let ChatStore { rooms, worker, settings, .. } = &store.application;
+                let info = rooms.get(&room_id).ok_or(IambError::NoSelectedMessage)?;
+                let msg = info.get_pinned(&event_id).ok_or(IambError::NoSelectedMessage)?;
+
+                room::chat::msg_unreact(msg, settings, info, worker, &room_id, reaction, literal)
+                    .await
             },
             _ => {
                 let msg = "Open the message in its room to do that (Enter)";
@@ -737,7 +763,7 @@ impl IambWindow {
         let msg_id = match self {
             IambWindow::Room(RoomState::Chat(chat)) => chat.current_message(store),
             IambWindow::Room(RoomState::Message(message)) => Some(message.id().to_owned()),
-            _ => None,
+            _ => self.selected_message(store).map(|(_, event_id)| event_id.into()),
         };
 
         room_command(id, act, ctx, store, msg_id).await

@@ -381,9 +381,30 @@ pub fn strip_reply_fallback(msgtype: &mut MessageType) {
         return;
     }
 
-    let new_body = content.body.lines().skip_while(|line| line.starts_with('>')).collect();
+    let new_body = content
+        .body
+        .lines()
+        .skip_while(|line| line.starts_with('>'))
+        // The fallback is followed by a blank line before the reply itself.
+        .skip_while(|line| line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     content.body = new_body;
+}
+
+/// The Matrix identifier a link points to, if it's a `matrix:` or matrix.to link.
+fn link_matrix_id(url: &Url) -> Option<MatrixId> {
+    MatrixUri::parse(url.as_str())
+        .map(|uri| uri.id().clone())
+        .or_else(|_| MatrixToUri::parse(url.as_str()).map(|uri| uri.id().clone()))
+        .ok()
+}
+
+/// Whether two links go to the same place, since formatted links to Matrix rooms, users and events
+/// get turned into `matrix:` links while the same link in plain text stays a matrix.to one.
+fn same_link(a: &Url, b: &Url) -> bool {
+    a == b || link_matrix_id(a).is_some_and(|id| Some(id) == link_matrix_id(b))
 }
 
 fn content_html(msgtype: &MessageType) -> Option<StyleTree> {
@@ -1555,7 +1576,7 @@ impl Message {
             .filter_map(|u| Url::parse(u.as_str()).ok());
 
         for url in plain {
-            if links.iter().any(|(_, link)| *link == url) {
+            if links.iter().any(|(_, link)| same_link(link, &url)) {
                 continue;
             }
 
@@ -1918,6 +1939,18 @@ pub mod tests {
     }
 
     #[test]
+    fn test_strip_reply_fallback() {
+        let mut msgtype =
+            MessageType::text_plain("> <@a:example.com> hi\n\nsee https://x.example.com\nthanks");
+        strip_reply_fallback(&mut msgtype);
+
+        let MessageType::Text(content) = msgtype else {
+            unreachable!()
+        };
+        assert_eq!(content.body, "see https://x.example.com\nthanks");
+    }
+
+    #[test]
     fn test_find_links() {
         let message = |content: serde_json::Value| -> Message {
             let ev: RoomMessageEvent = serde_json::from_value(serde_json::json!({
@@ -1958,6 +1991,15 @@ pub mod tests {
             "formatted_body": "<a href=\"https://example.com/a\">https://example.com/a</a>",
         }));
         assert_eq!(urls(&msg), vec!["0 https://example.com/a"]);
+
+        // A matrix.to link in plain text is the same as the matrix: link it's formatted as.
+        let msg = message(serde_json::json!({
+            "msgtype": "m.text",
+            "body": "https://matrix.to/#/!abc:example.com/$ev:example.com?via=example.com",
+            "format": "org.matrix.custom.html",
+            "formatted_body": "<a href=\"https://matrix.to/#/!abc:example.com/$ev:example.com?via=example.com\">link</a>",
+        }));
+        assert_eq!(urls(&msg).len(), 1, "{:?}", urls(&msg));
 
         // Plain messages still work.
         let msg =

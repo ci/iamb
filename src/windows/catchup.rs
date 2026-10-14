@@ -935,9 +935,28 @@ pub(crate) mod tests {
         let res = win.message_command(MessageAction::CopyLink, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Application(IambError::NoAttachment))));
 
+        // Reactions reach the message too: an unknown one asks first, and a known one needs the
+        // room to be joined, which it isn't in tests.
+        let react = MessageAction::React("not an emoji".into(), false);
+        let res = win.message_command(react, ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::NeedConfirm(_))));
+        let react = MessageAction::React("+1".into(), false);
+        let res = win.message_command(react, ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::Application(IambError::NotJoined))));
+
         // Others need the room.
-        let res = win.message_command(MessageAction::Reply, ctx, &mut store).await;
+        let res = win.message_command(MessageAction::Reply, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Failure(_))));
+
+        // `:message` opens the selected message's details.
+        let cmd = Box::new(modalkit::env::vim::command::CommandContext::default());
+        let acts = win.room_command(RoomAction::Message(cmd), ctx, &mut store).await.unwrap();
+        let expected =
+            IambId::Room(TEST_ROOM1_ID.clone().into(), RoomView::Message(MSG1_EVID.clone().into()));
+        assert!(
+            matches!(&acts[..], [(Action::Window(WindowAction::Switch(OpenTarget::Application(id))), _)] if *id == expected),
+            "{acts:?}"
+        );
     }
 
     #[tokio::test]

@@ -685,6 +685,22 @@ impl IambWindow {
 
                 room::chat::msg_copy_link(msg, ctx)
             },
+            MessageAction::React(reaction, literal) => {
+                let ChatStore { rooms, worker, settings, .. } = &store.application;
+                let info = rooms.get(&room_id).ok_or(IambError::NoSelectedMessage)?;
+                let msg = info.get_pinned(&event_id).ok_or(IambError::NoSelectedMessage)?;
+
+                room::chat::msg_react(msg, settings, info, worker, &room_id, reaction, literal)
+                    .await
+            },
+            MessageAction::Unreact(reaction, literal) => {
+                let ChatStore { rooms, worker, settings, .. } = &store.application;
+                let info = rooms.get(&room_id).ok_or(IambError::NoSelectedMessage)?;
+                let msg = info.get_pinned(&event_id).ok_or(IambError::NoSelectedMessage)?;
+
+                room::chat::msg_unreact(msg, settings, info, worker, &room_id, reaction, literal)
+                    .await
+            },
             _ => {
                 let msg = "Open the message in its room to do that (Enter)";
                 Err(UIError::Failure(msg.into()))
@@ -737,7 +753,7 @@ impl IambWindow {
         let msg_id = match self {
             IambWindow::Room(RoomState::Chat(chat)) => chat.current_message(store),
             IambWindow::Room(RoomState::Message(message)) => Some(message.id().to_owned()),
-            _ => None,
+            _ => self.selected_message(store).map(|(_, event_id)| event_id.into()),
         };
 
         room_command(id, act, ctx, store, msg_id).await

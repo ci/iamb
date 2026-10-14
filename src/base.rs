@@ -1713,21 +1713,26 @@ impl RoomInfo {
         Some((loc.to_thread_root(), loc.to_message_key()?))
     }
 
-    /// Get an event for an identifier.
+    /// Get an event for an identifier, from the scrollback if it's loaded or else from the
+    /// events fetched outside of it, like for `:pinned` or `:bookmarks`.
     pub fn get_message(&self, message_id: &MessageId) -> Option<&Message> {
-        let (root, key) = self.get_message_thread_key(message_id)?;
+        if let Some((root, key)) = self.get_message_thread_key(message_id) {
+            return self.get_thread(root)?.get(key);
+        }
 
-        self.get_thread(root)?.get(key)
+        self.pinned_previews.get(message_id.as_origin()?)
     }
 
     /// Get an event for an identifier as mutable.
     pub fn get_message_mut(&mut self, message_id: &MessageId) -> Option<&mut Message> {
-        let (root, key) = self.get_message_thread_key(message_id)?;
+        if let Some((root, key)) = self.get_message_thread_key(message_id) {
+            let root = root.map(ToOwned::to_owned);
+            let key = key.to_owned();
 
-        let root = root.map(ToOwned::to_owned);
-        let key = key.to_owned();
+            return self.get_thread_mut(root).get_mut(&key);
+        }
 
-        self.get_thread_mut(root).get_mut(&key)
+        self.pinned_previews.get_mut(message_id.as_origin()?)
     }
 
     pub fn redact(&mut self, ev: OriginalSyncRoomRedactionEvent) {
@@ -3847,6 +3852,23 @@ pub mod tests {
         // It's only ever asked for once, even after the request has been taken.
         store.application.need_full_members_once(&room_id);
         assert_eq!(store.application.need_load.full_members_needs().count(), 0);
+    }
+
+    #[test]
+    fn test_get_message_fetched() {
+        let mut info = mock_room();
+        let fetched = owned_event_id!("$fetched:example.com");
+        let id = MessageId::from(fetched.clone());
+
+        assert!(info.get_message(&id).is_none());
+
+        // Events fetched outside the scrollback can be found too, like for `:message`.
+        info.insert_pinned(fetched, mock_message1().into());
+        assert!(info.get_message(&id).is_some());
+        assert!(info.get_message_mut(&id).is_some());
+
+        // And loaded messages still come from the scrollback.
+        assert!(info.get_message(&MessageId::from(MSG1_EVID.clone())).is_some());
     }
 
     #[test]

@@ -659,6 +659,16 @@ impl IambWindow {
             return Err(IambError::NoSelectedRoom.into());
         };
 
+        // A collapsed :catchup room stands in for its newest message, which isn't shown.
+        let collapsed = match self {
+            IambWindow::CatchUp(state, _) => state.get().is_some_and(|item| item.is_collapsed()),
+            _ => false,
+        };
+        if collapsed && matches!(act, MessageAction::React(..) | MessageAction::Unreact(..)) {
+            let msg = "Expand the room to react to one of its messages";
+            return Err(UIError::Failure(msg.into()));
+        }
+
         match act {
             MessageAction::Download(filename, flags) => {
                 let ChatStore { rooms, worker, settings, .. } = &mut store.application;

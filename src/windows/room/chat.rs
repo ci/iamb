@@ -931,6 +931,16 @@ pub async fn msg_unreact(
     reaction: Option<String>,
     literal: bool,
 ) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    // Messages fetched outside the scrollback, like old bookmarks, come without their reactions.
+    if msg
+        .event
+        .event_id()
+        .is_some_and(|event_id| info.get_event(event_id).is_none())
+    {
+        let msg = "This message's reactions haven't loaded; open it in its room first";
+        return Err(UIError::Failure(msg.into()));
+    }
+
     let emoji = match reaction {
         reaction if literal => reaction,
         Some(reaction) => {

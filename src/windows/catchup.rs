@@ -75,6 +75,11 @@ impl CatchUpItem {
     pub fn event_id(&self) -> &EventId {
         &self.event_id
     }
+
+    /// Whether this item stands in for a whole collapsed room.
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
 }
 
 impl Display for CatchUpItem {
@@ -943,6 +948,26 @@ pub(crate) mod tests {
         let react = MessageAction::React("+1".into(), false);
         let res = win.message_command(react, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Application(IambError::NotJoined))));
+
+        // A collapsed room's row doesn't show the message it stands for, so can't be reacted to.
+        let state = CatchUpListState::new(IambBufferId::CatchUp, vec![collapsed_room(room, None)]);
+        let mut folded = IambWindow::CatchUp(state, CatchUpFeed::default());
+        let react = MessageAction::React("+1".into(), false);
+        let res = folded.message_command(react, ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::Failure(msg)) if msg.starts_with("Expand")));
+
+        // Fetched messages come without reactions, so unreacting says so.
+        let other = "!other:example.com";
+        let fetched = OwnedEventId::try_from("$fetched:example.com").unwrap();
+        let info = store.application.rooms.get_or_default(other.try_into().unwrap());
+        info.insert_pinned(fetched.clone(), Some(mock_message1()));
+        let state =
+            CatchUpListState::new(IambBufferId::CatchUp, vec![item(other, &fetched, 9, false)]);
+        let mut old = IambWindow::CatchUp(state, CatchUpFeed::default());
+        let res = old
+            .message_command(MessageAction::Unreact(None, false), ctx.clone(), &mut store)
+            .await;
+        assert!(matches!(res, Err(UIError::Failure(msg)) if msg.contains("haven't loaded")));
 
         // Others need the room.
         let res = win.message_command(MessageAction::Reply, ctx.clone(), &mut store).await;

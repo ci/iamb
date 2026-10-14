@@ -942,17 +942,37 @@ pub(crate) mod tests {
 
         // Reactions reach the message too: an unknown one asks first, and a known one needs the
         // room to be joined, which it isn't in tests.
-        let react = MessageAction::React("not an emoji".into(), false);
+        let react = MessageAction::React(Some("not an emoji".into()), false);
         let res = win.message_command(react, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::NeedConfirm(_))));
-        let react = MessageAction::React("+1".into(), false);
+        let react = MessageAction::React(Some("+1".into()), false);
         let res = win.message_command(react, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Application(IambError::NotJoined))));
+
+        // Without an Emoji, it picks one of the message's reactions to add ours to.
+        let react = MessageAction::React(None, false);
+        let res = win.message_command(react.clone(), ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::Failure(msg)) if msg.contains("no reactions yet")));
+
+        let me = store.application.settings.profile.user_id.clone();
+        let info = store.application.rooms.get_or_default(TEST_ROOM1_ID.clone());
+        let reactions = info.reactions.entry(MSG1_EVID.clone()).or_default();
+        let mine = (String::from("👍"), me, None);
+        reactions.insert(OwnedEventId::try_from("$mine:example.com").unwrap(), mine);
+        let res = win.message_command(react.clone(), ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::Failure(msg)) if msg.contains("already added")));
+
+        let info = store.application.rooms.get_or_default(TEST_ROOM1_ID.clone());
+        let reactions = info.reactions.entry(MSG1_EVID.clone()).or_default();
+        let theirs = (String::from("\u{2795}\u{fe0f}"), TEST_USER2.clone(), None);
+        reactions.insert(OwnedEventId::try_from("$theirs:example.com").unwrap(), theirs);
+        let res = win.message_command(react, ctx.clone(), &mut store).await;
+        assert!(matches!(res, Err(UIError::NeedConfirm(_))));
 
         // A collapsed room's row doesn't show the message it stands for, so can't be reacted to.
         let state = CatchUpListState::new(IambBufferId::CatchUp, vec![collapsed_room(room, None)]);
         let mut folded = IambWindow::CatchUp(state, CatchUpFeed::default());
-        let react = MessageAction::React("+1".into(), false);
+        let react = MessageAction::React(Some("+1".into()), false);
         let res = folded.message_command(react, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Failure(msg)) if msg.starts_with("Expand")));
 

@@ -65,6 +65,7 @@ use crate::message::poll::{
 use crate::notifications::NotificationHandle;
 use crate::prelude::*;
 use crate::profile_changes::ProfileChanges;
+use crate::util::same_emoji;
 
 /// The set of characters used in different Matrix IDs.
 pub const MATRIX_ID_WORD: WordStyle = WordStyle::CharSet(is_mxid_char);
@@ -196,8 +197,8 @@ pub enum MessageAction {
     ///
     /// `:react` will by default try to convert the [String] argument to an Emoji, and error when
     /// it doesn't recognize it. The second [bool] argument forces it to be interpreted literally
-    /// when it is `true`.
-    React(String, bool),
+    /// when it is `true`. Without an argument, it picks one of the message's reactions to add to.
+    React(Option<String>, bool),
 
     /// Pin a message to the room.
     Pin,
@@ -1650,6 +1651,18 @@ impl RoomInfo {
         }
     }
 
+    /// The way others already wrote an Emoji when reacting to a message, if they did.
+    ///
+    /// Clients write some Emoji differently, like with or without a variation selector, and
+    /// reactions only group together when they match exactly.
+    pub fn same_reaction(&self, event_id: &EventId, emoji: &str) -> Option<&str> {
+        self.get_reactions(event_id)
+            .into_iter()
+            .filter(|(key, _, _)| same_emoji(key, emoji))
+            .max_by_key(|(_, users, _)| users.len())
+            .map(|(key, _, _)| key)
+    }
+
     pub fn get_reaction_images(&self, event_id: &EventId) -> impl Iterator<Item = &MediaSource> {
         self.reactions
             .get(event_id)
@@ -2531,11 +2544,17 @@ impl RoomInfo {
         user_id: &UserId,
         event_id: &EventId,
         emoji: &str,
+        literal: bool,
     ) -> bool {
         if let Some(reactions) = self.reactions.get(event_id) {
-            reactions
-                .values()
-                .any(|(annotation, user, _)| annotation == emoji && user == user_id)
+            reactions.values().any(|(annotation, user, _)| {
+                user == user_id &&
+                    if literal {
+                        annotation == emoji
+                    } else {
+                        same_emoji(annotation, emoji)
+                    }
+            })
         } else {
             false
         }
@@ -3481,6 +3500,35 @@ pub mod tests {
                 owned_user_id!("@foo:example.com").deref(),
             ],)
         ]);
+    }
+
+    #[test]
+    fn test_same_reaction() {
+        let mut info = RoomInfo::default();
+        let msg = owned_event_id!("$msg");
+        let me = owned_user_id!("@me:example.com");
+        let reacts = [
+            ("$a", "\u{2795}\u{fe0f}", "@a:example.com"),
+            ("$b", "\u{2795}\u{fe0f}", "@b:example.com"),
+            ("$c", "\u{2795}", "@c:example.com"),
+            ("$d", "🏠", me.as_str()),
+        ];
+        for (event_id, key, sender) in reacts {
+            let content = ReactionEventContent::new(Annotation::new(msg.clone(), key.into()));
+            info.insert_reaction(create_reaction_event(&content, event_id, sender), None);
+        }
+
+        // Reacting joins whichever way most others wrote it.
+        assert_eq!(info.same_reaction(&msg, "\u{2795}"), Some("\u{2795}\u{fe0f}"));
+        assert_eq!(info.same_reaction(&msg, "🏠"), Some("🏠"));
+        assert_eq!(info.same_reaction(&msg, "🙂"), None);
+
+        // Our own reactions match however they're written, unless asked for exactly.
+        assert!(info.user_reactions_contains(&me, &msg, "🏠", true));
+        assert!(!info.user_reactions_contains(&me, &msg, "\u{2795}", false));
+        let c = owned_user_id!("@c:example.com");
+        assert!(info.user_reactions_contains(&c, &msg, "\u{2795}\u{fe0f}", false));
+        assert!(!info.user_reactions_contains(&c, &msg, "\u{2795}\u{fe0f}", true));
     }
 
     #[test]

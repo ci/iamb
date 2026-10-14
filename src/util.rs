@@ -180,6 +180,19 @@ pub fn join_cell_text<'a>(texts: Vec<(Text<'a>, usize)>, join: Span<'a>, style: 
     text
 }
 
+/// Whether two reactions are the same Emoji, even when written differently, like with or
+/// without a variation selector.
+pub fn same_emoji(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+
+    match (emojis::get(a), emojis::get(b)) {
+        (Some(a), Some(b)) => a.as_str() == b.as_str(),
+        _ => false,
+    }
+}
+
 fn replace_emoji_in_grapheme(grapheme: &str) -> String {
     emojis::get(grapheme)
         .and_then(|emoji| emoji.shortcode())
@@ -290,6 +303,16 @@ impl Drop for SuspendedTty<'_> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn test_same_emoji() {
+        assert!(same_emoji("\u{2795}", "\u{2795}\u{fe0f}"));
+        assert!(same_emoji("👍", "👍"));
+        assert!(same_emoji("custom", "custom"));
+        assert!(!same_emoji("👍", "👍🏽"));
+        assert!(!same_emoji("👍", "➕"));
+        assert!(!same_emoji("custom", "Custom"));
+    }
 
     #[test]
     fn test_compile_search_case_insensitive() {

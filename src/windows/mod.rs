@@ -672,6 +672,10 @@ impl IambWindow {
             let msg = "Expand the room to react to one of its messages";
             return Err(UIError::Failure(msg.into()));
         }
+        if collapsed && act == MessageAction::Permalink {
+            let msg = "Expand the room to link to one of its messages";
+            return Err(UIError::Failure(msg.into()));
+        }
 
         match act {
             MessageAction::Download(filename, flags) => {
@@ -698,6 +702,10 @@ impl IambWindow {
                     .ok_or(IambError::NoSelectedMessage)?;
 
                 room::chat::msg_copy_link(msg, ctx)
+            },
+            MessageAction::Permalink => {
+                let worker = &store.application.worker;
+                room::chat::msg_permalink(&room_id, Some(&event_id), worker, ctx).await
             },
             MessageAction::React(reaction, literal) => {
                 let ChatStore { rooms, worker, settings, .. } = &store.application;
@@ -1363,6 +1371,23 @@ impl WindowOps<IambInfo> for IambWindow {
     }
 }
 
+impl IambWindow {
+    /// Open a window, jumping to a message in it when there's one to go to.
+    pub fn open_at(
+        id: IambId,
+        event_id: Option<OwnedEventId>,
+        store: &mut ProgramStore,
+    ) -> IambResult<Self> {
+        let mut win = Self::open(id, store)?;
+
+        if let (Some(event_id), IambWindow::Room(RoomState::Chat(chat))) = (event_id, &mut win) {
+            chat.jump_to_message(event_id, store)?;
+        }
+
+        Ok(win)
+    }
+}
+
 impl Window<IambInfo> for IambWindow {
     fn id(&self) -> IambId {
         match self {
@@ -1611,11 +1636,11 @@ impl Window<IambInfo> for IambWindow {
                 store.application.worker.create_dm(user_id.to_owned())?.into()
             }
         } else if let Ok(uri) = MatrixUri::parse(name.as_str()) {
-            let id = resolve_mxid(store, uri.id().to_owned(), uri.via().to_owned())?;
-            return IambWindow::open(id, store);
+            let (id, event_id) = resolve_mxid(store, uri.id().to_owned(), uri.via().to_owned())?;
+            return IambWindow::open_at(id, event_id, store);
         } else if let Ok(uri) = MatrixToUri::parse(name.as_str()) {
-            let id = resolve_mxid(store, uri.id().to_owned(), uri.via().to_owned())?;
-            return IambWindow::open(id, store);
+            let (id, event_id) = resolve_mxid(store, uri.id().to_owned(), uri.via().to_owned())?;
+            return IambWindow::open_at(id, event_id, store);
         } else {
             return Err(UIError::Failure("Could not parse room identifier".to_string()));
         };

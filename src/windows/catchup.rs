@@ -975,6 +975,20 @@ pub(crate) mod tests {
         let react = MessageAction::React(Some("+1".into()), false);
         let res = folded.message_command(react, ctx.clone(), &mut store).await;
         assert!(matches!(res, Err(UIError::Failure(msg)) if msg.starts_with("Expand")));
+        let res = folded
+            .message_command(MessageAction::Permalink, ctx.clone(), &mut store)
+            .await;
+        assert!(matches!(res, Err(UIError::Failure(msg)) if msg.starts_with("Expand")));
+
+        // Links to the message can be copied, without servers to find it through for rooms that
+        // aren't joined, like in tests.
+        let res = win
+            .message_command(MessageAction::Permalink, ctx.clone(), &mut store)
+            .await;
+        let acts = res.unwrap().into_iter().map(|(act, _)| act).collect::<Vec<_>>();
+        let link = TEST_ROOM1_ID.matrix_to_event_uri(MSG1_EVID.clone()).to_string();
+        assert!(link.starts_with("https://matrix.to/#/!"), "{link}");
+        assert_eq!(acts, vec![IambAction::Copy(link).into()]);
 
         // Fetched messages come without reactions, so unreacting says so.
         let other = "!other:example.com";

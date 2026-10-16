@@ -254,12 +254,19 @@ and
 windows, as do
 .Sy ":download" ,
 .Sy ":copylink" ,
+.Sy ":permalink" ,
 .Sy ":message" ,
 .Sy ":react"
 and
 .Sy ":unreact" .
 .It Sy ":copylink"
 Copy a link in the selected message to the clipboard, picking one if there are several.
+.It Sy ":permalink"
+Copy a matrix.to link to the selected message to the clipboard,
+which other clients can open too.
+Opening a link to a message in
+.Nm
+jumps to it.
 .It Sy ":edit"
 Edit the selected message.
 .It Sy ":editor"

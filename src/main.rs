@@ -716,31 +716,14 @@ impl Application {
                 Some(format!("Copied {text}").into())
             },
             IambAction::OpenLink(url) => {
-                let matrix_uri = MatrixUri::parse(&url).ok();
-                let matrix_to_uri = MatrixToUri::parse(&url).ok();
+                if MatrixUri::parse(&url).is_ok() || MatrixToUri::parse(&url).is_ok() {
+                    // Opening it by name finds the room, and jumps to the message it links to
+                    // once the room is open.
+                    let target = OpenTarget::Name(url);
+                    let action = WindowAction::Switch(target);
 
-                let matrix_id = matrix_uri
-                    .as_ref()
-                    .map(|uri| (uri.id(), uri.via()))
-                    .or(matrix_to_uri.as_ref().map(|uri| (uri.id(), uri.via())));
-
-                if let Some((id, via)) = matrix_id {
-                    match resolve_mxid(store, id.to_owned(), via.to_vec()) {
-                        Ok((id, event_id)) => {
-                            let target = OpenTarget::Application(id);
-                            let action = WindowAction::Switch(target);
-                            let mut acts = vec![(action.into(), ctx.clone())];
-
-                            if let Some(event_id) = event_id {
-                                let jump = IambAction::from(TimelineAction::GotoEvent(event_id));
-                                acts.push((jump.into(), ctx));
-                            }
-
-                            self.action_prepend(acts);
-                            None
-                        },
-                        Err(err) => return Err(UIError::Failure(err.to_string())),
-                    }
+                    self.action_prepend(vec![(action.into(), ctx)]);
+                    None
                 } else {
                     tokio::task::spawn_blocking(move || open::that(url));
 

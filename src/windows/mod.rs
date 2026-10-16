@@ -2679,4 +2679,16 @@ mod tests {
         rooms.sort_by(|a, b| room_fields_cmp(a, b, fields, collator));
         assert_eq!(rooms, vec![&room5, &room1, &room3, &room4, &room2]);
     }
+
+    #[tokio::test]
+    async fn test_find_message_link() {
+        let mut store = crate::tests::mock_store().await;
+
+        // A link to a message in a room we haven't joined opens its preview, without jumping.
+        let link = "https://matrix.to/#/!unknown:example.com/$event:example.com";
+        let win = IambWindow::find(link.into(), &mut store).unwrap();
+        assert!(matches!(win, IambWindow::Room(RoomState::NotJoined(_))));
+        let room = OwnedRoomOrAliasId::try_from("!unknown:example.com").unwrap();
+        assert_eq!(win.id(), IambId::Room(room, RoomView::Main));
+    }
 }

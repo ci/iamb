@@ -191,39 +191,6 @@ fn resolve_mxid(
     Ok((IambId::Room(alias_id, thread.into()), event))
 }
 
-#[cfg(test)]
-mod resolve_tests {
-    use super::*;
-    use crate::base::EventLocation;
-    use crate::tests::*;
-
-    #[tokio::test]
-    async fn test_resolve_message_links() {
-        let mut store = mock_store().await;
-        let room = OwnedRoomOrAliasId::from(TEST_ROOM1_ID.clone());
-
-        // Rooms open at their newest messages.
-        let id = MatrixId::Room(TEST_ROOM1_ID.clone());
-        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
-        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), None));
-
-        // Messages open at the message, even when linked through the room's alias.
-        let id = MatrixId::Event(TEST_ROOM1_ALIAS.clone().into(), MSG1_EVID.clone());
-        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
-        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), Some(MSG1_EVID.clone())));
-
-        // And in their thread, when we know they're in one.
-        let reply = OwnedEventId::try_from("$reply:example.com").unwrap();
-        let info = store.application.rooms.get_or_default(TEST_ROOM1_ID.clone());
-        let loc = EventLocation::Message(Some(MSG1_EVID.clone()), MSG2_KEY.clone());
-        info.keys.insert(reply.clone(), loc);
-        let id = MatrixId::Event(TEST_ROOM1_ID.clone().into(), reply.clone());
-        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
-        let thread = RoomView::Thread(MSG1_EVID.clone());
-        assert_eq!(res, (IambId::Room(room, thread), Some(reply)));
-    }
-}
-
 fn setup_screen(
     settings: ApplicationSettings,
     store: &mut ProgramStore,
@@ -1402,4 +1369,37 @@ fn main() {
     }
 
     drop(guard);
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use crate::base::EventLocation;
+    use crate::tests::*;
+
+    #[tokio::test]
+    async fn test_resolve_message_links() {
+        let mut store = mock_store().await;
+        let room = OwnedRoomOrAliasId::from(TEST_ROOM1_ID.clone());
+
+        // Rooms open at their newest messages.
+        let id = MatrixId::Room(TEST_ROOM1_ID.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), None));
+
+        // Messages open at the message, even when linked through the room's alias.
+        let id = MatrixId::Event(TEST_ROOM1_ALIAS.clone().into(), MSG1_EVID.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), Some(MSG1_EVID.clone())));
+
+        // And in their thread, when we know they're in one.
+        let reply = OwnedEventId::try_from("$reply:example.com").unwrap();
+        let info = store.application.rooms.get_or_default(TEST_ROOM1_ID.clone());
+        let loc = EventLocation::Message(Some(MSG1_EVID.clone()), MSG2_KEY.clone());
+        info.keys.insert(reply.clone(), loc);
+        let id = MatrixId::Event(TEST_ROOM1_ID.clone().into(), reply.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        let thread = RoomView::Thread(MSG1_EVID.clone());
+        assert_eq!(res, (IambId::Room(room, thread), Some(reply)));
+    }
 }

@@ -131,12 +131,14 @@ fn restore_layout(
     tabs.to_layout(area.into(), store)
 }
 
+/// The window to open for a Matrix identifier, and the message to jump to in it, if any.
 fn resolve_mxid(
     store: &mut ProgramStore,
     id: MatrixId,
     via: Vec<OwnedServerName>,
-) -> IambResult<IambId> {
-    let alias_id = match id {
+) -> IambResult<(IambId, Option<OwnedEventId>)> {
+    let mut event = None;
+    let alias_id: OwnedRoomOrAliasId = match id {
         MatrixId::Room(room_id) => room_id.into(),
         MatrixId::RoomAlias(alias) => {
             if let Some(room_id) = store.application.aliases.get(&alias) {
@@ -152,9 +154,18 @@ fn resolve_mxid(
                 store.application.worker.create_dm(user_id.to_owned())?.into()
             }
         },
-        MatrixId::Event(alias_id, _) => {
-            // ignore event id for now
-            alias_id
+        MatrixId::Event(alias_id, event_id) => {
+            event = Some(event_id);
+
+            match <&matrix_sdk::ruma::RoomAliasId>::try_from(alias_id.as_str()) {
+                Ok(alias) => {
+                    match store.application.aliases.get(alias) {
+                        Some(room_id) => room_id.to_owned().into(),
+                        None => alias_id,
+                    }
+                },
+                Err(_) => alias_id,
+            }
         },
         _ => {
             tracing::error!("encountered unrecoginsed matrix id: {id:?}");
@@ -169,7 +180,15 @@ fn resolve_mxid(
         .or_default()
         .extend(via);
 
-    Ok(IambId::Room(alias_id, RoomView::Main))
+    // Messages in threads are shown in their thread, when we know where they are.
+    let thread = event.as_ref().and_then(|event_id| {
+        let room_id = <&RoomId>::try_from(alias_id.as_str()).ok()?;
+        let info = store.application.rooms.get(room_id)?;
+        let (thread, _) = info.get_message_location(event_id)?;
+        thread.map(ToOwned::to_owned)
+    });
+
+    Ok((IambId::Room(alias_id, thread.into()), event))
 }
 
 fn setup_screen(
@@ -183,8 +202,8 @@ fn setup_screen(
 
     if let Some((id, via)) = initial_room {
         match resolve_mxid(store, id, via) {
-            Ok(id) => {
-                return Ok(ScreenState::new(IambWindow::open(id, store)?, cmd));
+            Ok((id, event_id)) => {
+                return Ok(ScreenState::new(IambWindow::open_at(id, event_id, store)?, cmd));
             },
             Err(err) => {
                 store.application.draw_error = Some(format!("layout restore: {err}"));
@@ -697,25 +716,14 @@ impl Application {
                 Some(format!("Copied {text}").into())
             },
             IambAction::OpenLink(url) => {
-                let matrix_uri = MatrixUri::parse(&url).ok();
-                let matrix_to_uri = MatrixToUri::parse(&url).ok();
+                if MatrixUri::parse(&url).is_ok() || MatrixToUri::parse(&url).is_ok() {
+                    // Opening it by name finds the room, and jumps to the message it links to
+                    // once the room is open.
+                    let target = OpenTarget::Name(url);
+                    let action = WindowAction::Switch(target);
 
-                let matrix_id = matrix_uri
-                    .as_ref()
-                    .map(|uri| (uri.id(), uri.via()))
-                    .or(matrix_to_uri.as_ref().map(|uri| (uri.id(), uri.via())));
-
-                if let Some((id, via)) = matrix_id {
-                    match resolve_mxid(store, id.to_owned(), via.to_vec()) {
-                        Ok(id) => {
-                            let target = OpenTarget::Application(id);
-                            let action = WindowAction::Switch(target);
-
-                            self.action_prepend(vec![(action.into(), ctx)]);
-                            None
-                        },
-                        Err(err) => return Err(UIError::Failure(err.to_string())),
-                    }
+                    self.action_prepend(vec![(action.into(), ctx)]);
+                    None
                 } else {
                     tokio::task::spawn_blocking(move || open::that(url));
 
@@ -1344,4 +1352,37 @@ fn main() {
     }
 
     drop(guard);
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use crate::base::EventLocation;
+    use crate::tests::*;
+
+    #[tokio::test]
+    async fn test_resolve_message_links() {
+        let mut store = mock_store().await;
+        let room = OwnedRoomOrAliasId::from(TEST_ROOM1_ID.clone());
+
+        // Rooms open at their newest messages.
+        let id = MatrixId::Room(TEST_ROOM1_ID.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), None));
+
+        // Messages open at the message, even when linked through the room's alias.
+        let id = MatrixId::Event(TEST_ROOM1_ALIAS.clone().into(), MSG1_EVID.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        assert_eq!(res, (IambId::Room(room.clone(), RoomView::Main), Some(MSG1_EVID.clone())));
+
+        // And in their thread, when we know they're in one.
+        let reply = OwnedEventId::try_from("$reply:example.com").unwrap();
+        let info = store.application.rooms.get_or_default(TEST_ROOM1_ID.clone());
+        let loc = EventLocation::Message(Some(MSG1_EVID.clone()), MSG2_KEY.clone());
+        info.keys.insert(reply.clone(), loc);
+        let id = MatrixId::Event(TEST_ROOM1_ID.clone().into(), reply.clone());
+        let res = resolve_mxid(&mut store, id, vec![]).unwrap();
+        let thread = RoomView::Thread(MSG1_EVID.clone());
+        assert_eq!(res, (IambId::Room(room, thread), Some(reply)));
+    }
 }

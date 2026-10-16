@@ -184,6 +184,9 @@ pub enum MessageAction {
     /// Copy one of the message's links to the clipboard.
     CopyLink,
 
+    /// Copy a link to the message itself to the clipboard.
+    Permalink,
+
     /// Download an attachment to the given path.
     ///
     /// The second argument controls whether to overwrite any already existing file at the

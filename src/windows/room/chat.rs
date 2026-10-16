@@ -129,7 +129,7 @@ impl ChatState {
         }
     }
 
-    fn jump_to_message(
+    pub fn jump_to_message(
         &mut self,
         event_id: OwnedEventId,
         store: &mut ProgramStore,
@@ -230,6 +230,10 @@ impl ChatState {
                 .await
             },
             MessageAction::CopyLink => msg_copy_link(msg, ctx),
+            MessageAction::Permalink => {
+                let worker = &store.application.worker;
+                msg_permalink(self.id(), msg.event.event_id(), worker, ctx).await
+            },
             MessageAction::Edit => {
                 if msg.sender != settings.profile.user_id {
                     let msg = "Cannot edit messages sent by someone else";
@@ -675,6 +679,27 @@ fn open_links(
     ctx: ProgramContext,
 ) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
     with_link(msg, ctx, IambAction::OpenLink)
+}
+
+/// Copy a link to a message to the clipboard, which other clients can open too.
+pub async fn msg_permalink(
+    room_id: &RoomId,
+    event_id: Option<&EventId>,
+    worker: &Requester,
+    ctx: ProgramContext,
+) -> IambResult<Vec<(Action<IambInfo>, EditContext)>> {
+    let Some(event_id) = event_id else {
+        let msg = "Cannot link to a message that hasn't been sent yet";
+        return Err(UIError::Failure(msg.into()));
+    };
+
+    // Joined rooms know which servers can be asked for them, for others to find them through.
+    let link = match worker.client.get_room(room_id) {
+        Some(room) => room.matrix_to_event_permalink(event_id).await.map_err(IambError::from)?,
+        None => room_id.matrix_to_event_uri(event_id),
+    };
+
+    Ok(vec![(IambAction::Copy(link.to_string()).into(), ctx)])
 }
 
 /// Copy one of a message's links to the clipboard.

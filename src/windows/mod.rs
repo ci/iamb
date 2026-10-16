@@ -1759,7 +1759,6 @@ impl GenericRoomItem {
         self.section = ListSectionHeader::for_room(self, fields);
     }
 
-    /// Generate the list of labels to show for this room.
     /// Show the room, highlighting the graphemes of its name at the given indices.
     fn show_matched<'a>(
         &'a self,
@@ -1787,6 +1786,7 @@ impl GenericRoomItem {
         Text::from(Line::from(spans))
     }
 
+    /// Generate the list of labels to show for this room.
     fn name_and_labels<'a>(
         &'a self,
         name_style: Style,

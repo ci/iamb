@@ -145,6 +145,11 @@ impl Promptable<ProgramContext, ProgramStore, IambInfo> for GotoItem {
         let mut acts = match &self.target {
             GotoTarget::Room(room) => room_prompt(room.room_id(), act, ctx)?,
             GotoTarget::View(..) => {
+                if act != &PromptAction::Submit {
+                    let msg = "Can only open places from :goto";
+                    return Err(EditError::Failure(msg.into()));
+                }
+
                 let open = WindowAction::Switch(OpenTarget::Application(self.id()));
                 vec![(open.into(), ctx.clone())]
             },
@@ -185,6 +190,20 @@ pub(super) fn matched_spans<'a>(text: &'a str, matched: &[u32], style: Style) ->
     }
 
     spans
+}
+
+/// Text to match against, as one character per grapheme so match indices are grapheme indices.
+///
+/// [Utf32Str::new] also does this, but treats text as ASCII when each grapheme starts with an
+/// ASCII character, giving byte indices for names with combining marks, like a decomposed "é".
+fn haystack<'a>(text: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
+    if text.is_ascii() {
+        return Utf32Str::Ascii(text.as_bytes());
+    }
+
+    buf.clear();
+    buf.extend(text.graphemes(true).filter_map(|grapheme| grapheme.chars().next()));
+    Utf32Str::Unicode(buf)
 }
 
 /// Every place `:goto` can open, in the order to show them in before anything's typed: rooms,
@@ -240,12 +259,12 @@ fn filter(places: Vec<GotoItem>, query: &str) -> Vec<GotoItem> {
         .into_iter()
         .filter_map(|mut place| {
             let mut matched = vec![];
-            let name = Utf32Str::new(place.name(), &mut buf);
+            let name = haystack(place.name(), &mut buf);
             let name_score = pattern.indices(name, &mut matcher, &mut matched);
 
             let other_score = place
                 .other_name()
-                .and_then(|other| pattern.score(Utf32Str::new(other, &mut buf), &mut matcher));
+                .and_then(|other| pattern.score(haystack(other, &mut buf), &mut matcher));
 
             let score = match (name_score, other_score) {
                 (Some(name), Some(other)) if other > name => {
@@ -314,7 +333,12 @@ impl GotoState {
     }
 
     fn query(&self) -> String {
-        self.tbox.get_text().replace('\n', "")
+        // The text box always ends its text with a newline.
+        let mut text = self.tbox.get_text();
+        if text.ends_with('\n') {
+            text.pop();
+        }
+        text
     }
 
     /// Refresh the matching places, selecting the best one when the query has changed, and
@@ -424,7 +448,35 @@ impl Editable<ProgramContext, ProgramStore, IambInfo> for GotoState {
                 self.move_selection(*dir, ctx, store)
             },
             act if is_line_motion(act, ctx) => self.list.editor_command(act, ctx, store),
-            act => self.tbox.editor_command(act, ctx, store),
+
+            // The query is a single line, so newlines typed into it, like from <Enter> in Insert
+            // mode when `send_on_enter` is off, are left out.
+            EditorAction::InsertText(InsertTextAction::Type(
+                Specifier::Exact(Char::Single('\n')),
+                _,
+                _,
+            )) => Ok(None),
+
+            // And pasted ones become spaces.
+            EditorAction::InsertText(InsertTextAction::Transcribe(text, dir, count))
+                if text.contains('\n') =>
+            {
+                let text = text.replace('\n', " ");
+                let act = InsertTextAction::Transcribe(text, *dir, count.clone());
+                self.tbox.editor_command(&act.into(), ctx, store)
+            },
+
+            act => {
+                let res = self.tbox.editor_command(act, ctx, store);
+
+                // Anything else adding lines, like pasting a register, is joined back up.
+                let query = self.query();
+                if query.contains('\n') {
+                    self.tbox.set_text(query.replace('\n', " "));
+                }
+
+                res
+            },
         }
     }
 }
@@ -432,12 +484,14 @@ impl Editable<ProgramContext, ProgramStore, IambInfo> for GotoState {
 impl Jumpable<ProgramContext, IambInfo> for GotoState {
     fn jump(
         &mut self,
-        list: PositionList,
-        dir: MoveDir1D,
+        _: PositionList,
+        _: MoveDir1D,
         count: usize,
-        ctx: &ProgramContext,
+        _: &ProgramContext,
     ) -> IambResult<usize> {
-        self.list.jump(list, dir, count, ctx)
+        // Picking a place moves the list on every redraw, which isn't worth jumping back through,
+        // so leave jumps to the window history, like going back to where :goto was opened from.
+        Ok(count)
     }
 }
 
@@ -576,6 +630,19 @@ mod tests {
         ]);
 
         assert_eq!(matched_spans("", &[], style), vec![Span::styled("", style)]);
+
+        // Including when every grapheme starts with an ASCII character, like with a decomposed é.
+        let room = GotoItem {
+            target: GotoTarget::View("Cafe\u{301} Chat", "x"),
+            matched: vec![],
+        };
+        let found = filter(vec![room], "Chat");
+        assert_eq!(found[0].matched, vec![5, 6, 7, 8]);
+        let spans = matched_spans(found[0].name(), &found[0].matched, style);
+        assert_eq!(spans, vec![
+            Span::styled("Cafe\u{301} ", style),
+            Span::styled("Chat", hl)
+        ]);
     }
 
     #[tokio::test]
@@ -602,15 +669,38 @@ mod tests {
         assert_eq!(win.list.get().map(GotoItem::id), Some(IambId::UnreadList));
         assert_eq!(win.query(), "");
 
+        // Redrawing keeps the same place selected, without filling the jumplist, so <C-O> goes
+        // back to the previous window.
+        win.update(&mut store);
+        win.update(&mut store);
+        assert_eq!(win.list.get().map(GotoItem::id), Some(IambId::UnreadList));
+        assert_eq!(win.jump(PositionList::JumpList, MoveDir1D::Previous, 1, &ctx).unwrap(), 1);
+
         // Typing edits the query, which picks the best match again.
-        let typed = EditorAction::InsertText(InsertTextAction::Type(
-            Char::Single('n').into(),
+        let typed = |c| {
+            EditorAction::InsertText(InsertTextAction::Type(
+                Char::Single(c).into(),
+                MoveDir1D::Previous,
+                Count::Exact(1),
+            ))
+        };
+        for c in ['n', 'i', 'c', '\n', 'k'] {
+            win.editor_command(&typed(c), &ctx, &mut store).unwrap();
+        }
+
+        // Newlines, like from <Enter> when `send_on_enter` is off, are left out.
+        assert_eq!(win.query(), "nick");
+        let paste = EditorAction::InsertText(InsertTextAction::Transcribe(
+            "a\nb".into(),
             MoveDir1D::Previous,
             Count::Exact(1),
         ));
-        win.editor_command(&typed, &ctx, &mut store).unwrap();
+        win.editor_command(&paste, &ctx, &mut store).unwrap();
+        win.editor_command(&typed('c'), &ctx, &mut store).unwrap();
+        assert_eq!(win.query(), "nicka bc");
         win.tbox.set_text("nick");
-        assert_eq!(win.query(), "nick");
+        win.update(&mut store);
+        assert_eq!(win.list.get().map(GotoItem::id), Some(IambId::ProfileChangeList));
 
         // Submitting opens it, even before the list is drawn again, and leaves Insert mode.
         let acts = win.prompt(&PromptAction::Submit, &ctx, &mut store).unwrap();

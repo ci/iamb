@@ -72,6 +72,7 @@ unicode-width = "0.2"
 url = {version = "2.5.8", features = ["serde"]}
 percent-encoding = "2.3.2"
 xdg = "3.0.0"
+nucleo-matcher = "0.3"
 
 [dependencies.comrak]
 version = "0.55.0"

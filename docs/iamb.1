@@ -58,6 +58,33 @@ A matrix uri or matrix.to link to open on startup. Specified at
 View a list of joined rooms and direct messages.
 .It Sy ":dms"
 View a list of direct messages.
+.It Sy ":goto"
+Jump to a room, direct message, space or list, like
+.Sy ":catchup"
+or
+.Sy ":bookmarks" ,
+by typing part of its name.
+Letters only need to appear in order, so
+.Sy "oxqa"
+finds
+.Dq oxide-q&a ,
+and case only matters when an uppercase letter is typed.
+Rooms can also be found by their alias, and lists by their command.
+Moving up and down, or completing with
+.Sy "<C-N>"
+and
+.Sy "<C-P>" ,
+picks a match, and
+.Sy Enter
+opens it in Normal mode.
+When
+.Sy send_on_enter
+is off, press
+.Sy Esc
+before
+.Sy Enter .
+Before anything is typed, rooms are listed in the order of
+.Sy ":chats" .
 .It Sy ":logout [user id]"
 Log out of
 .Nm .

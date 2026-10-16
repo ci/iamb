@@ -684,8 +684,9 @@ fn complete_cmdarg(
 
         // These have no arguments
         "cancel" | "chats" | "dms" | "editor" | "edit" | "forget" | "invites" | "leave" |
-        "bookmark" | "bookmarks" | "copylink" | "members" | "mentions" | "message" | "nicks" |
-        "pin" | "pinned" | "unbookmark" | "unpin" | "replied" | "reply" | "rooms" | "welcome" => {
+        "bookmark" | "bookmarks" | "copylink" | "goto" | "members" | "mentions" | "message" |
+        "nicks" | "pin" | "pinned" | "unbookmark" | "unpin" | "replied" | "reply" | "rooms" |
+        "welcome" => {
             vec![]
         },
 
@@ -868,6 +869,7 @@ impl Completer<IambInfo> for IambCompleter {
             IambBufferId::ProfileChangeList => vec![],
             IambBufferId::CatchUp => vec![],
             IambBufferId::BookmarkList => vec![],
+            IambBufferId::Goto | IambBufferId::GotoQuery => vec![],
         }
     }
 }

@@ -595,6 +595,17 @@ fn iamb_nicks(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     return Ok(step);
 }
 
+fn iamb_goto(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
+    if !desc.arg.text.is_empty() {
+        return Result::Err(CommandError::InvalidArgument);
+    }
+
+    let open = ctx.switch(OpenTarget::Application(IambId::Goto));
+    let step = CommandStep::Continue(open, ctx.context.clone());
+
+    return Ok(step);
+}
+
 fn iamb_whois(desc: CommandDescription, ctx: &mut ProgContext) -> ProgResult {
     let mut args = desc.arg.strings()?;
 
@@ -1397,6 +1408,7 @@ pub fn add_iamb_commands(cmds: &mut ProgramCommands) {
         aliases: vec![],
         f: iamb_nicks,
     });
+    cmds.add_command(ProgramCommand { name: "goto".into(), aliases: vec![], f: iamb_goto });
     cmds.add_command(ProgramCommand {
         name: "catchup".into(),
         aliases: vec![],

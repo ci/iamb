@@ -41,6 +41,7 @@ use crate::profile_changes::ProfileChangeEntry;
 use crate::resolve_mxid;
 use crate::windows::bookmarks::{BookmarkItem, BookmarkListState};
 use crate::windows::catchup::{CatchUpFeed, CatchUpListState};
+use crate::windows::goto::GotoState;
 use crate::windows::list_previews::PreviewItem;
 use crate::windows::room::{RoomState, room_command};
 use crate::windows::verify::VerifyItem;
@@ -48,6 +49,7 @@ use crate::windows::welcome::WelcomeState;
 
 pub mod bookmarks;
 pub mod catchup;
+pub mod goto;
 pub mod list_previews;
 pub mod room;
 pub mod verify;
@@ -532,6 +534,7 @@ macro_rules! delegate {
             IambWindow::ProfileChangeList($id) => $e,
             IambWindow::CatchUp($id, _) => $e,
             IambWindow::BookmarkList($id, _) => $e,
+            IambWindow::Goto($id) => $e,
         }
     };
 }
@@ -553,6 +556,7 @@ pub enum IambWindow {
     ProfileChangeList(ProfileChangeListState),
     CatchUp(CatchUpListState, CatchUpFeed),
     BookmarkList(BookmarkListState, Option<Instant>),
+    Goto(GotoState),
 }
 
 impl IambWindow {
@@ -1303,6 +1307,7 @@ impl WindowOps<IambInfo> for IambWindow {
                     .render(area, buf, state);
             },
             IambWindow::Welcome(state) => state.draw(area, buf, focused, store),
+            IambWindow::Goto(state) => state.draw(area, buf, focused, store),
         }
     }
 
@@ -1328,6 +1333,7 @@ impl WindowOps<IambInfo> for IambWindow {
             IambWindow::ProfileChangeList(w) => Self::ProfileChangeList(w.dup(store)),
             IambWindow::CatchUp(w, _) => Self::CatchUp(w.dup(store), CatchUpFeed::default()),
             IambWindow::BookmarkList(w, _) => Self::BookmarkList(w.dup(store), None),
+            IambWindow::Goto(w) => Self::Goto(w.dup(store)),
         }
     }
 
@@ -1376,6 +1382,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::ProfileChangeList(_) => IambId::ProfileChangeList,
             IambWindow::CatchUp(..) => IambId::CatchUp,
             IambWindow::BookmarkList(..) => IambId::BookmarkList,
+            IambWindow::Goto(_) => IambId::Goto,
         }
     }
 
@@ -1392,6 +1399,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::from("Unread Mentions"),
             IambWindow::InvitesList(_) => Line::from("Open Invites"),
             IambWindow::ProfileChangeList(_) => Line::from("Profile Changes"),
+            IambWindow::Goto(_) => Line::from("Go to"),
             IambWindow::BookmarkList(state, _) => {
                 Line::from(format!("Bookmarks ({})", state.len()))
             },
@@ -1439,6 +1447,7 @@ impl Window<IambInfo> for IambWindow {
             IambWindow::MentionsList(_) => Line::styled("Unread Mentions", style),
             IambWindow::InvitesList(_) => Line::styled("Open Invites", style),
             IambWindow::ProfileChangeList(_) => Line::styled("Profile Changes", style),
+            IambWindow::Goto(_) => Line::styled("Go to", style),
             IambWindow::BookmarkList(state, _) => {
                 Line::styled(format!("Bookmarks ({})", state.len()), style)
             },
@@ -1582,6 +1591,7 @@ impl Window<IambInfo> for IambWindow {
 
                 Ok(Self::BookmarkList(list, None))
             },
+            IambId::Goto => Ok(Self::Goto(GotoState::new(store))),
         }
     }
 
@@ -1749,6 +1759,33 @@ impl GenericRoomItem {
         self.section = ListSectionHeader::for_room(self, fields);
     }
 
+    /// Show the room, highlighting the graphemes of its name at the given indices.
+    fn show_matched<'a>(
+        &'a self,
+        selected: bool,
+        _: &ViewportContext<ListCursor>,
+        store: &'a ProgramStore,
+        matched: &[u32],
+    ) -> Text<'a> {
+        let theme = &store.application.settings.theme;
+        let order = store.application.settings.tunables.room_labels.as_slice();
+
+        let (unreads, name_style, tags_style) = unreads_and_style(&self.unread, &theme.rooms);
+        let name_style = selected_style(selected, name_style);
+        let tags_style = if selected { name_style } else { tags_style };
+
+        let (name, labels) = self.name_and_labels(name_style, tags_style, order);
+        let mut spans = vec![unreads];
+        if matched.is_empty() {
+            spans.push(name);
+        } else {
+            spans.extend(goto::matched_spans(&self.name, matched, name_style));
+        }
+
+        append_tags(labels, &mut spans, tags_style);
+        Text::from(Line::from(spans))
+    }
+
     /// Generate the list of labels to show for this room.
     fn name_and_labels<'a>(
         &'a self,
@@ -1862,21 +1899,10 @@ impl ListItem<IambInfo> for GenericRoomItem {
     fn show<'a>(
         &'a self,
         selected: bool,
-        _: &ViewportContext<ListCursor>,
+        viewctx: &ViewportContext<ListCursor>,
         store: &'a ProgramStore,
     ) -> Text<'a> {
-        let theme = &store.application.settings.theme;
-        let order = store.application.settings.tunables.room_labels.as_slice();
-
-        let (unreads, name_style, tags_style) = unreads_and_style(&self.unread, &theme.rooms);
-        let name_style = selected_style(selected, name_style);
-        let tags_style = if selected { name_style } else { tags_style };
-
-        let (name, labels) = self.name_and_labels(name_style, tags_style, order);
-        let mut spans = vec![unreads, name];
-
-        append_tags(labels, &mut spans, tags_style);
-        Text::from(Line::from(spans))
+        self.show_matched(selected, viewctx, store, &[])
     }
 
     fn get_word(&self) -> Option<String> {

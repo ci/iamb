@@ -3041,6 +3041,9 @@ pub enum IambId {
 
     /// The `:bookmarks` window.
     BookmarkList,
+
+    /// The `:goto` window.
+    Goto,
 }
 
 impl Display for IambId {
@@ -3077,6 +3080,7 @@ impl Display for IambId {
             IambId::ProfileChangeList => f.write_str("iamb://nicks"),
             IambId::CatchUp => f.write_str("iamb://catchup"),
             IambId::BookmarkList => f.write_str("iamb://bookmarks"),
+            IambId::Goto => f.write_str("iamb://goto"),
         }
     }
 }
@@ -3275,6 +3279,13 @@ impl Visitor<'_> for IambIdVisitor {
 
                 Ok(IambId::BookmarkList)
             },
+            Some("goto") => {
+                if url.path() != "" {
+                    return Err(E::custom("iamb://goto takes no path"));
+                }
+
+                Ok(IambId::Goto)
+            },
             Some(s) => Err(E::custom(format!("{s:?} is not a valid window"))),
             None => Err(E::custom("Invalid iamb window URL")),
         }
@@ -3366,6 +3377,12 @@ pub enum IambBufferId {
 
     /// The `:bookmarks` window.
     BookmarkList,
+
+    /// The list of places in the `:goto` window.
+    Goto,
+
+    /// What to search for in the `:goto` window.
+    GotoQuery,
 }
 
 impl IambBufferId {
@@ -3389,6 +3406,7 @@ impl IambBufferId {
             IambBufferId::ProfileChangeList => IambId::ProfileChangeList,
             IambBufferId::CatchUp => IambId::CatchUp,
             IambBufferId::BookmarkList => IambId::BookmarkList,
+            IambBufferId::Goto | IambBufferId::GotoQuery => IambId::Goto,
         };
 
         Some(id)

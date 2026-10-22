@@ -1,6 +1,6 @@
 use matrix_sdk::Media;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, UniqueKey};
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::Picker;
 use ratatui_image::sliced::SlicedProtocol;
 use ratatui_image::{FilterType, Resize};
 use tokio::sync::Semaphore;
@@ -132,26 +132,9 @@ fn picker_from_settings(settings: &ApplicationSettings) -> Picker {
     // user forced protocol type; use that
     if let Some(protocol_type) = settings.tunables.image_preview.protocol.r#type {
         picker.set_protocol_type(protocol_type);
-    } else {
-        let term_program = std::env::var("TERM_PROGRAM").ok();
-        let protocol_type =
-            detected_protocol_fallback(picker.protocol_type(), term_program.as_deref());
-        picker.set_protocol_type(protocol_type);
     }
 
     picker
-}
-
-/// Swap a detected protocol the terminal can't actually draw for one it can.
-///
-/// Rex answers the kitty graphics query, but doesn't render the unicode placeholders that
-/// ratatui-image places kitty images with, so they show up as boxes. It doesn't draw sixel or
-/// iTerm2 images either.
-fn detected_protocol_fallback(detected: ProtocolType, term_program: Option<&str>) -> ProtocolType {
-    match (detected, term_program) {
-        (ProtocolType::Kitty, Some("rex")) => ProtocolType::Halfblocks,
-        (detected, _) => detected,
-    }
 }
 
 pub async fn load_image(
@@ -216,30 +199,4 @@ pub async fn load_image(
 
     let mut locked = store.lock().await;
     locked.application.previews.insert(key, kind, status);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rex_kitty_falls_back_to_halfblocks() {
-        assert_eq!(
-            detected_protocol_fallback(ProtocolType::Kitty, Some("rex")),
-            ProtocolType::Halfblocks
-        );
-    }
-
-    #[test]
-    fn test_other_terminals_keep_detected_protocol() {
-        assert_eq!(
-            detected_protocol_fallback(ProtocolType::Kitty, Some("ghostty")),
-            ProtocolType::Kitty
-        );
-        assert_eq!(detected_protocol_fallback(ProtocolType::Kitty, None), ProtocolType::Kitty);
-        assert_eq!(
-            detected_protocol_fallback(ProtocolType::Iterm2, Some("rex")),
-            ProtocolType::Iterm2
-        );
-    }
 }

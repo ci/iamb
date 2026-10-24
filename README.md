@@ -162,6 +162,11 @@ pkgin install iamb
 nix profile install "github:ulyssa/iamb"
 ```
 
+The flake caches Cargo dependencies separately from the application. Source-only
+revisions reuse those artifacts while the installed application still reports its
+Git revision. Dependency or toolchain changes rebuild the dependency artifacts.
+The `iamb-deps-cache` flake check guards this separation.
+
 ### openSUSE Tumbleweed
 
 On openSUSE Tumbleweed a [package](https://build.opensuse.org/package/show/openSUSE:Factory/iamb) is available from the official repositories. To install it simply run:

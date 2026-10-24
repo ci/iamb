@@ -19,7 +19,7 @@
     flake-utils,
     fenix,
     ...
-  }:
+  } @ inputs:
     flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -52,12 +52,15 @@
           ];
         };
 
-        commonArgs = rec {
+        commonArgs = {
           inherit src;
           strictDeps = true;
           pname = "iamb";
-          version = self.shortRev or self.dirtyShortRev;
+          version = (lib.importTOML ./Cargo.toml).package.version;
+        };
 
+        appArgs = commonArgs // rec {
+          version = self.shortRev or self.dirtyShortRev;
           VERGEN_GIT_SHA = version;
         };
 
@@ -66,7 +69,7 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         # Build the actual crate
-        iamb = craneLib.buildPackage (commonArgs // {
+        iamb = craneLib.buildPackage (appArgs // {
           inherit cargoArtifacts;
 
           nativeBuildInputs = [ pkgs.installShellFiles ];
@@ -96,7 +99,11 @@
           # Build the crate as part of `nix flake check`
           inherit iamb;
 
-          iamb-clippy = craneLib.cargoClippy (commonArgs
+          iamb-deps-cache = import ./tests/nix-dependency-cache.nix {
+            inherit inputs pkgs system;
+          };
+
+          iamb-clippy = craneLib.cargoClippy (appArgs
             // {
               inherit cargoArtifacts;
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
@@ -106,7 +113,7 @@
             inherit src;
           };
 
-          iamb-nextest = craneLib.cargoNextest (commonArgs
+          iamb-nextest = craneLib.cargoNextest (appArgs
             // {
               inherit cargoArtifacts;
               partitions = 1;
